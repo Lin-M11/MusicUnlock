@@ -5,83 +5,108 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
 /**
- * MusicUnlock 主题(基于 ui-ux-pro-max 的 Dark Mode(OLED) + 音乐流媒体配色):
- * - 深色: 深黑/午夜蓝背景 + 靛蓝主色 + 播放绿强调
- * - 浅色: 同色相的浅色方案
- * - 全部使用语义色板(token),组件内不写死颜色
+ * MusicUnlock 主题 —— 新拟态(Neumorphism) + 极简(工具类产品)。
+ * 依据 ui-ux-pro-max 对 "Calculator & Unit Converter" 产品的推荐:
+ * 柔和单色底(浅灰/中性炭灰, 非蓝调) + 组件同底色 + 左上高光/右下暗影双阴影,
+ * 主操作色用橙色, 成功=绿, 失败=红, 全程语义 token、8dp 间距节奏。
  */
 object MusicUnlockColors {
-    // 深色(OLED)
-    val DarkPrimary = Color(0xFF818CF8)        // indigo-400
-    val DarkOnPrimary = Color(0xFF0F0F23)
-    val DarkSecondary = Color(0xFF22C55E)      // 播放绿
-    val DarkOnSecondary = Color(0xFF0F172A)
-    val DarkTertiary = Color(0xFFF97316)       // 强调橙
-    val DarkBackground = Color(0xFF0F0F23)     // 午夜蓝
-    val DarkSurface = Color(0xFF1B1B30)
-    val DarkSurfaceVariant = Color(0xFF27273B)
-    val DarkOnSurface = Color(0xFFF8FAFC)
-    val DarkOnSurfaceVariant = Color(0xFF94A3B8)
-    val DarkOutline = Color(0xFF4338CA)
-    val DarkError = Color(0xFFEF4444)
-    val DarkOnError = Color(0xFFFFFFFF)
-
-    // 浅色
-    val LightPrimary = Color(0xFF4F46E5)       // indigo-600
+    // ---- 浅色(新拟态经典浅灰) ----
+    val LightBg = Color(0xFFF0F0F2)            // 近白底(组件同色)
+    val LightText = Color(0xFF3F3F46)          // 主文字
+    val LightTextSecondary = Color(0xFF71717A) // 次要文字
+    val LightHighlight = Color(0xCCFFFFFF)     // 左上高光(白)
+    val LightShadow = Color(0x40000000)        // 右下暗影(黑, 近白底上稍加深)
+    val LightInsetTop = Color(0x24000000)      // 内凹顶暗
+    val LightInsetBottom = Color(0x99FFFFFF)   // 内凹底亮
+    val LightPrimary = Color(0xFFEA580C)       // 橙色主操作
     val LightOnPrimary = Color(0xFFFFFFFF)
-    val LightSecondary = Color(0xFF16A34A)
-    val LightOnSecondary = Color(0xFFFFFFFF)
-    val LightTertiary = Color(0xFFEA580C)
-    val LightBackground = Color(0xFFF8FAFC)
-    val LightSurface = Color(0xFFFFFFFF)
-    val LightSurfaceVariant = Color(0xFFEEF2F7)
-    val LightOnSurface = Color(0xFF1E293B)
-    val LightOnSurfaceVariant = Color(0xFF475569)
-    val LightOutline = Color(0xFF94A3B8)
+    val LightSuccess = Color(0xFF16A34A)
     val LightError = Color(0xFFDC2626)
-    val LightOnError = Color(0xFFFFFFFF)
+
+    // ---- 深色(中性炭灰, 非蓝调) ----
+    val DarkBg = Color(0xFF2A2A2E)
+    val DarkText = Color(0xFFF4F4F5)
+    val DarkTextSecondary = Color(0xFFA1A1AA)
+    val DarkHighlight = Color(0x1FFFFFFF)
+    val DarkShadow = Color(0x66000000)
+    val DarkInsetTop = Color(0x59000000)
+    val DarkInsetBottom = Color(0x12FFFFFF)
+    val DarkPrimary = Color(0xFFF97316)
+    val DarkOnPrimary = Color(0xFF1C0A00)
+    val DarkSuccess = Color(0xFF22C55E)
+    val DarkError = Color(0xFFEF4444)
 }
 
-private val DarkColors = darkColorScheme(
-    primary = MusicUnlockColors.DarkPrimary,
-    onPrimary = MusicUnlockColors.DarkOnPrimary,
-    primaryContainer = Color(0xFF312E81),
-    onPrimaryContainer = Color(0xFFE0E7FF),
-    secondary = MusicUnlockColors.DarkSecondary,
-    onSecondary = MusicUnlockColors.DarkOnSecondary,
-    tertiary = MusicUnlockColors.DarkTertiary,
-    background = MusicUnlockColors.DarkBackground,
-    onBackground = MusicUnlockColors.DarkOnSurface,
-    surface = MusicUnlockColors.DarkSurface,
-    onSurface = MusicUnlockColors.DarkOnSurface,
-    surfaceVariant = MusicUnlockColors.DarkSurfaceVariant,
-    onSurfaceVariant = MusicUnlockColors.DarkOnSurfaceVariant,
-    outline = MusicUnlockColors.DarkOutline,
-    outlineVariant = Color(0xFF3F3F5E),
-    error = MusicUnlockColors.DarkError,
-    onError = MusicUnlockColors.DarkOnError,
+/** 由背景亮度判断当前深浅主题, 返回对应新拟态阴影/内凹 token。 */
+internal data class NeumorphicTokens(
+    val highlight: Color,
+    val shadow: Color,
+    val insetTop: Color,
+    val insetBottom: Color,
 )
+
+@Composable
+internal fun neumorphicTokens(): NeumorphicTokens {
+    val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    return if (isLight) {
+        NeumorphicTokens(
+            highlight = MusicUnlockColors.LightHighlight,
+            shadow = MusicUnlockColors.LightShadow,
+            insetTop = MusicUnlockColors.LightInsetTop,
+            insetBottom = MusicUnlockColors.LightInsetBottom,
+        )
+    } else {
+        NeumorphicTokens(
+            highlight = MusicUnlockColors.DarkHighlight,
+            shadow = MusicUnlockColors.DarkShadow,
+            insetTop = MusicUnlockColors.DarkInsetTop,
+            insetBottom = MusicUnlockColors.DarkInsetBottom,
+        )
+    }
+}
 
 private val LightColors = lightColorScheme(
     primary = MusicUnlockColors.LightPrimary,
     onPrimary = MusicUnlockColors.LightOnPrimary,
-    primaryContainer = Color(0xFFE0E7FF),
-    onPrimaryContainer = Color(0xFF312E81),
-    secondary = MusicUnlockColors.LightSecondary,
-    onSecondary = MusicUnlockColors.LightOnSecondary,
-    tertiary = MusicUnlockColors.LightTertiary,
-    background = MusicUnlockColors.LightBackground,
-    onBackground = MusicUnlockColors.LightOnSurface,
-    surface = MusicUnlockColors.LightSurface,
-    onSurface = MusicUnlockColors.LightOnSurface,
-    surfaceVariant = MusicUnlockColors.LightSurfaceVariant,
-    onSurfaceVariant = MusicUnlockColors.LightOnSurfaceVariant,
-    outline = MusicUnlockColors.LightOutline,
-    outlineVariant = Color(0xFFCBD5E1),
+    primaryContainer = Color(0xFFFFE4D6),
+    onPrimaryContainer = Color(0xFF7C2D12),
+    secondary = MusicUnlockColors.LightSuccess,
+    onSecondary = Color(0xFFFFFFFF),
+    tertiary = MusicUnlockColors.LightPrimary,
+    background = MusicUnlockColors.LightBg,
+    onBackground = MusicUnlockColors.LightText,
+    surface = MusicUnlockColors.LightBg,
+    onSurface = MusicUnlockColors.LightText,
+    surfaceVariant = Color(0xFFE6E6E9),
+    onSurfaceVariant = MusicUnlockColors.LightTextSecondary,
+    outline = Color(0xFFB4B4BC),
+    outlineVariant = Color(0xFFD4D4D8),
     error = MusicUnlockColors.LightError,
-    onError = MusicUnlockColors.LightOnError,
+    onError = Color(0xFFFFFFFF),
+)
+
+private val DarkColors = darkColorScheme(
+    primary = MusicUnlockColors.DarkPrimary,
+    onPrimary = MusicUnlockColors.DarkOnPrimary,
+    primaryContainer = Color(0xFF5C2A0D),
+    onPrimaryContainer = Color(0xFFFFDBC8),
+    secondary = MusicUnlockColors.DarkSuccess,
+    onSecondary = Color(0xFF00280F),
+    tertiary = MusicUnlockColors.DarkPrimary,
+    background = MusicUnlockColors.DarkBg,
+    onBackground = MusicUnlockColors.DarkText,
+    surface = MusicUnlockColors.DarkBg,
+    onSurface = MusicUnlockColors.DarkText,
+    surfaceVariant = Color(0xFF323236),
+    onSurfaceVariant = MusicUnlockColors.DarkTextSecondary,
+    outline = Color(0xFF4A4A50),
+    outlineVariant = Color(0xFF3A3A3E),
+    error = MusicUnlockColors.DarkError,
+    onError = Color(0xFFFFFFFF),
 )
 
 @Composable
