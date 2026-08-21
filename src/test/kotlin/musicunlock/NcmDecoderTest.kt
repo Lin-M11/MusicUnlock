@@ -184,4 +184,34 @@ class NcmDecoderTest {
         private val META_PREFIX = "163 key(Don't modify):".toByteArray(StandardCharsets.US_ASCII)
         private val MUSIC_PREFIX = "music:".toByteArray(StandardCharsets.US_ASCII)
     }
+    /**
+     * 回归测试:像 NcmDecoder.readAudio 那样用独立缓冲区 + offset=0 分块解密,
+     * 结果必须与单次解密一致。流密码位置必须在整个音频上连续推进,不能每次
+     * 调用都从 0 重新开始,否则后续块会复用同一段密钥流。
+     */
+    @Test
+    fun cipherChunkedDecryptionWithFreshBuffersMatchesSinglePass() {
+        val key = ByteArray(16)
+        Random(7).nextBytes(key)
+        val data = ByteArray(100_000)
+        Random(42).nextBytes(data)
+
+        val encrypted = data.copyOf()
+        NcmCipher(key).decrypt(encrypted, 0, encrypted.size)
+
+        val decrypted = ByteArray(data.size)
+        val cipher = NcmCipher(key)
+        val buffer = ByteArray(100) // 故意不用 256 的整数倍
+        var done = 0
+        while (done < data.size) {
+            val n = minOf(buffer.size, data.size - done)
+            System.arraycopy(encrypted, done, buffer, 0, n)
+            cipher.decrypt(buffer, 0, n)
+            System.arraycopy(buffer, 0, decrypted, done, n)
+            done += n
+        }
+
+        assertContentEquals(data, decrypted)
+    }
+
 }

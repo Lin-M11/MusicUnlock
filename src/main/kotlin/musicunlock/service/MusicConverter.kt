@@ -31,6 +31,7 @@ object MusicConverter {
 
             val outName = baseName(input.name) + "." + result.ext
             val output = File(outputDir, outName)
+            File(outputDir).mkdirs()
             Files.write(output.toPath(), result.data)
 
             if (result.musicName != null || result.artist != null || result.album != null || result.cover != null) {

@@ -266,7 +266,7 @@ fun showWindow() {
 fun MainScreen(dark: Boolean, onToggleDark: () -> Unit) {
     val scope = rememberCoroutineScope()
     val files = remember { mutableStateListOf<FileItem>() }
-    var outputDir by remember { mutableStateOf(File("output").absolutePath) }
+    var outputDir by remember { mutableStateOf(defaultOutputDir()) }
     var dedup by remember { mutableStateOf(false) }
     var converting by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
@@ -475,6 +475,19 @@ fun MainScreen(dark: Boolean, onToggleDark: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/**
+ * 默认输出目录:优先使用用户主目录下的 Music/MusicUnlock,
+ * 避免打包应用以 / 为工作目录时无法写入相对路径 "output"。
+ */
+private fun defaultOutputDir(): String {
+    val home = System.getProperty("user.home")
+    return if (!home.isNullOrBlank()) {
+        File(home, "Music/MusicUnlock").absolutePath
+    } else {
+        File("output").absolutePath
     }
 }
 
