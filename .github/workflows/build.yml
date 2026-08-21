@@ -40,9 +40,9 @@ jobs:
         if: runner.os == 'macOS'
         run: ./gradlew packageDmg
 
-      - name: Package (Windows .msi/.exe)
+      - name: Package (Windows .exe)
         if: runner.os == 'Windows'
-        run: ./gradlew packageMsi packageExe
+        run: ./gradlew packageExe
 
       - name: Install Linux packaging deps
         if: runner.os == 'Linux'
@@ -59,7 +59,6 @@ jobs:
           if-no-files-found: error
           path: |
             build/compose/binaries/main/dmg/*.dmg
-            build/compose/binaries/main/msi/*.msi
             build/compose/binaries/main/exe/*.exe
             build/compose/binaries/main/deb/*.deb
             build/compose/binaries/main/rpm/*.rpm
