@@ -36,9 +36,9 @@ jobs:
         run: ./gradlew test
 
       # jpackage 打包必须在目标操作系统上进行(Compose 官方限制)
-      - name: Package (macOS .dmg/.pkg)
+      - name: Package (macOS .dmg)
         if: runner.os == 'macOS'
-        run: ./gradlew packageDmg packagePkg
+        run: ./gradlew packageDmg
 
       - name: Package (Windows .msi/.exe)
         if: runner.os == 'Windows'
@@ -59,7 +59,6 @@ jobs:
           if-no-files-found: error
           path: |
             build/compose/binaries/main/dmg/*.dmg
-            build/compose/binaries/main/pkg/*.pkg
             build/compose/binaries/main/msi/*.msi
             build/compose/binaries/main/exe/*.exe
             build/compose/binaries/main/deb/*.deb
