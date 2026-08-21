@@ -285,7 +285,7 @@ fun MainScreen(dark: Boolean, onToggleDark: () -> Unit) {
                         Icons.Filled.MusicNote,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(26.dp),
+                        modifier = Modifier.size(26.dp).align(Alignment.Center),
                     )
                 }
                 Spacer(Modifier.width(16.dp))
