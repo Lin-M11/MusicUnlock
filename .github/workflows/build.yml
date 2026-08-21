@@ -44,15 +44,16 @@ jobs:
       # 改用 createDistributable 生成 exe + 自带 JRE 的目录, 再打成 zip
       - name: Package (Windows .exe zip)
         if: runner.os == 'Windows'
+        env:
+          JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8
         run: |
-          ./gradlew createDistributable || true
-          echo "=== jpackage ERR logs ==="
-          cat build/compose/logs/createDistributable/*err.txt 2>/dev/null || echo "(no err log)"
-          echo "=== jpackage OUT logs ==="
-          cat build/compose/logs/createDistributable/*out.txt 2>/dev/null || echo "(no out log)"
-          echo "=== args ==="
-          cat build/compose/tmp/createDistributable.args.txt 2>/dev/null || echo "(no args file)"
-          exit 1
+          # jpackage 在 Windows 用系统码页编码元数据, 中文描述在 Cp1252 下报
+          # "Input length = 1"; 强制 UTF-8 并重启 Gradle daemon 让其生效
+          chcp.com 65001 >/dev/null 2>&1 || true
+          ./gradlew --stop || true
+          ./gradlew createDistributable || { echo "=== jpackage ERR logs ==="; cat build/compose/logs/createDistributable/*err.txt 2>/dev/null; echo "=== jpackage OUT logs ==="; cat build/compose/logs/createDistributable/*out.txt 2>/dev/null; echo "=== args ==="; cat build/compose/tmp/createDistributable.args.txt 2>/dev/null; exit 1; }
+          tar -a -c -f MusicUnlock-windows.zip -C build/compose/binaries/main/app .
+          ls -la MusicUnlock-windows.zip
 
       - name: Install Linux packaging deps
         if: runner.os == 'Linux'
