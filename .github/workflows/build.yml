@@ -40,9 +40,14 @@ jobs:
         if: runner.os == 'macOS'
         run: ./gradlew packageDmg
 
-      - name: Package (Windows .exe)
+      # Windows 安装器(jpackage --type exe 依赖 WiX)在 CI 上不稳定,
+      # 改用 createDistributable 生成 exe + 自带 JRE 的目录, 再打成 zip
+      - name: Package (Windows .exe zip)
         if: runner.os == 'Windows'
-        run: ./gradlew packageExe
+        run: |
+          ./gradlew createDistributable
+          tar -a -c -f MusicUnlock-windows.zip -C build/compose/binaries/main/app .
+          ls -la MusicUnlock-windows.zip
 
       - name: Install Linux packaging deps
         if: runner.os == 'Linux'
@@ -59,6 +64,6 @@ jobs:
           if-no-files-found: error
           path: |
             build/compose/binaries/main/dmg/*.dmg
-            build/compose/binaries/main/exe/*.exe
+            MusicUnlock-windows.zip
             build/compose/binaries/main/deb/*.deb
             build/compose/binaries/main/rpm/*.rpm
