@@ -1,0 +1,66 @@
+name: Build (Compose Desktop)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ macos-latest, windows-latest, ubuntu-latest ]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Run tests
+        run: ./gradlew test
+
+      # jpackage 打包必须在目标操作系统上进行(Compose 官方限制)
+      - name: Package (macOS .dmg/.pkg)
+        if: runner.os == 'macOS'
+        run: ./gradlew packageDmg packagePkg
+
+      - name: Package (Windows .msi/.exe)
+        if: runner.os == 'Windows'
+        run: ./gradlew packageMsi packageExe
+
+      - name: Install Linux packaging deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg rpm
+
+      - name: Package (Linux .deb/.rpm)
+        if: runner.os == 'Linux'
+        run: ./gradlew packageDeb packageRpm
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicUnlock-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            build/compose/binaries/main/dmg/*.dmg
+            build/compose/binaries/main/pkg/*.pkg
+            build/compose/binaries/main/msi/*.msi
+            build/compose/binaries/main/exe/*.exe
+            build/compose/binaries/main/deb/*.deb
+            build/compose/binaries/main/rpm/*.rpm
