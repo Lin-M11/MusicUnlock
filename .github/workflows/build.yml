@@ -45,9 +45,14 @@ jobs:
       - name: Package (Windows .exe zip)
         if: runner.os == 'Windows'
         run: |
-          ./gradlew createDistributable
-          tar -a -c -f MusicUnlock-windows.zip -C build/compose/binaries/main/app .
-          ls -la MusicUnlock-windows.zip
+          ./gradlew createDistributable || true
+          echo "=== jpackage ERR logs ==="
+          cat build/compose/logs/createDistributable/*err.txt 2>/dev/null || echo "(no err log)"
+          echo "=== jpackage OUT logs ==="
+          cat build/compose/logs/createDistributable/*out.txt 2>/dev/null || echo "(no out log)"
+          echo "=== args ==="
+          cat build/compose/tmp/createDistributable.args.txt 2>/dev/null || echo "(no args file)"
+          exit 1
 
       - name: Install Linux packaging deps
         if: runner.os == 'Linux'
