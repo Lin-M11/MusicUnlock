@@ -40,7 +40,7 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "MusicUnlock"
             packageVersion = "1.0.0"
-            description = "多平台加密音乐格式转换工具"
+            description = "MusicUnlock - convert encrypted music files to open audio formats"
             vendor = "MusicUnlock"
             licenseFile.set(project.file("LICENSE"))
 
