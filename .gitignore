@@ -1,0 +1,17 @@
+# Gradle / Kotlin
+.gradle/
+build/
+.kotlin/
+out/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# macOS
+.DS_Store
+
+# 输出目录
+output/
+*.log
