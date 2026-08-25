@@ -144,6 +144,7 @@ fun MainScreen(dark: Boolean, onToggleDark: () -> Unit) {
     var progress by remember { mutableStateOf(0f) }
     var doneCount by remember { mutableStateOf(0) }
     var failCount by remember { mutableStateOf(0) }
+    var page by remember { mutableStateOf(0) }
 
     val t = cleanTokens()
     val totalBytes = files.sumOf { File(it.path).length() }
@@ -163,81 +164,128 @@ fun MainScreen(dark: Boolean, onToggleDark: () -> Unit) {
             totalCount = files.size,
         )
 
-        // ---- 主体:左列(拖拽 + 队列) + 右侧栏 ----
-        Row(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Column(
-                modifier = Modifier.weight(1f).fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+        // ---- 页签:格式转换 / 网易云下载 ----
+        PageTabs(page = page, onSelect = { page = it })
+
+        if (page == 0) {
+            // ---- 主体:左列(拖拽 + 队列) + 右侧栏 ----
+            Row(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                DropZone(
-                    files = files,
-                    onAddFiles = {
-                        val selected = FileDialogs.pickFiles("选择加密音乐文件", Formats.supportedExtensions())
-                        addPaths(files, selected.map { it.absolutePath })
-                    },
-                    onAddFolder = {
-                        FileDialogs.pickFolder("选择文件夹")?.let { addPaths(files, listOf(it.absolutePath)) }
-                    },
-                )
-                QueueCard(
-                    files = files,
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    DropZone(
+                        files = files,
+                        onAddFiles = {
+                            val selected = FileDialogs.pickFiles("选择加密音乐文件", Formats.supportedExtensions())
+                            addPaths(files, selected.map { it.absolutePath })
+                        },
+                        onAddFolder = {
+                            FileDialogs.pickFolder("选择文件夹")?.let { addPaths(files, listOf(it.absolutePath)) }
+                        },
+                    )
+                    QueueCard(
+                        files = files,
+                        converting = converting,
+                        onRemove = { index -> if (!converting) files.removeAt(index) },
+                    )
+                }
+
+                Rail(
+                    outputDir = outputDir,
+                    onOutputDirChange = { outputDir = it },
+                    dedup = dedup,
+                    onDedupChange = { dedup = it },
                     converting = converting,
-                    onRemove = { index -> if (!converting) files.removeAt(index) },
+                    progress = progress,
+                    doneCount = doneCount,
+                    failCount = failCount,
+                    totalCount = files.size,
                 )
             }
 
-            Rail(
-                outputDir = outputDir,
-                onOutputDirChange = { outputDir = it },
-                dedup = dedup,
-                onDedupChange = { dedup = it },
+            // ---- 底部:状态 + 开始转换 ----
+            Footer(
                 converting = converting,
-                progress = progress,
-                doneCount = doneCount,
-                failCount = failCount,
-                totalCount = files.size,
-            )
-        }
-
-        // ---- 底部:状态 + 开始转换 ----
-        Footer(
-            converting = converting,
-            convertingCount = convertingCount,
-            pendingCount = pendingCount,
-            enabled = !converting && files.isNotEmpty(),
-            onConvert = {
-                if (files.isEmpty()) return@Footer
-                converting = true
-                doneCount = 0
-                failCount = 0
-                progress = 0f
-                val targets = if (dedup) dedupFiles(files) else files.toList()
-                val output = outputDir
-                scope.launch {
-                    val total = targets.size
-                    var processed = 0
-                    targets.forEachIndexed { idx, item ->
-                        item.status = FileStatus.CONVERTING
-                        val ok = withContext(Dispatchers.IO) {
-                            val error = MusicConverter.convertWithError(item.path, output)
-                            if (error == null) {
-                                true
-                            } else {
-                                item.message = error
-                                false
+                convertingCount = convertingCount,
+                pendingCount = pendingCount,
+                enabled = !converting && files.isNotEmpty(),
+                onConvert = {
+                    if (files.isEmpty()) return@Footer
+                    converting = true
+                    doneCount = 0
+                    failCount = 0
+                    progress = 0f
+                    val targets = if (dedup) dedupFiles(files) else files.toList()
+                    val output = outputDir
+                    scope.launch {
+                        val total = targets.size
+                        var processed = 0
+                        targets.forEachIndexed { idx, item ->
+                            item.status = FileStatus.CONVERTING
+                            val ok = withContext(Dispatchers.IO) {
+                                val error = MusicConverter.convertWithError(item.path, output)
+                                if (error == null) {
+                                    true
+                                } else {
+                                    item.message = error
+                                    false
+                                }
                             }
+                            item.status = if (ok) FileStatus.DONE else FileStatus.FAILED
+                            if (ok) doneCount++ else failCount++
+                            processed++
+                            progress = processed.toFloat() / total
                         }
-                        item.status = if (ok) FileStatus.DONE else FileStatus.FAILED
-                        if (ok) doneCount++ else failCount++
-                        processed++
-                        progress = processed.toFloat() / total
+                        converting = false
                     }
-                    converting = false
-                }
-            },
+                },
+            )
+        } else {
+            DownloadPage(modifier = Modifier.weight(1f).fillMaxWidth())
+        }
+    }
+}
+
+// ============================================================
+//  页签
+// ============================================================
+
+@Composable
+private fun PageTabs(page: Int, onSelect: (Int) -> Unit) {
+    val t = cleanTokens()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(t.surface)
+            .border(1.dp, t.border, RoundedCornerShape(12.dp))
+            .padding(4.dp),
+    ) {
+        TabItem(modifier = Modifier.weight(1f), label = "格式转换", selected = page == 0) { onSelect(0) }
+        TabItem(modifier = Modifier.weight(1f), label = "网易云下载", selected = page == 1) { onSelect(1) }
+    }
+}
+
+@Composable
+private fun TabItem(modifier: Modifier, label: String, selected: Boolean, onClick: () -> Unit) {
+    val t = cleanTokens()
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(if (selected) t.primarySoft else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 9.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontSize = 13.5.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) t.primary else t.textSecondary,
         )
     }
 }

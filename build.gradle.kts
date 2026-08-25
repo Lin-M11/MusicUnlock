@@ -17,6 +17,7 @@ dependencies {
     implementation(compose.materialIconsExtended)
 
     implementation("com.google.code.gson:gson:2.13.1")
+    implementation("com.google.zxing:core:3.5.3")
     implementation("net.jthink:jaudiotagger:3.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
 

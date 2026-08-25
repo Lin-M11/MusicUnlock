@@ -43,6 +43,7 @@ SOFTWARE.
 | Compose Multiplatform | 1.7.3 | Apache-2.0 |
 | Kotlin | 2.1.0 | Apache-2.0 |
 | Gson | 2.13.1 | Apache-2.0 |
+| ZXing（二维码生成） | 3.5.3 | Apache-2.0 |
 | jaudiotagger | 3.0.1 | LGPL-2.1 |
 | kotlinx-coroutines | 1.9.0 | Apache-2.0 |
 

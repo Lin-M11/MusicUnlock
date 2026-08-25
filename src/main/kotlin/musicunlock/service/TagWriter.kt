@@ -12,28 +12,45 @@ import java.io.File
 import javax.imageio.ImageIO
 
 /**
- * 将 NCM 容器中的元数据与封面写回音频文件(jaudiotagger)。
+ * 写回音频元数据与封面(jaudiotagger)。
  * 写入失败只返回 false,由调用方决定是否告警,不应影响音频文件本身。
  */
 object TagWriter {
 
-    /** 尝试写回元数据与封面;成功返回 true,失败返回 false(不抛异常)。 */
+    /** 将 NCM 容器中的元数据与封面写回音频文件。 */
     fun embed(audioFile: File, result: MusicResult): Boolean {
+        return embedTags(
+            audioFile = audioFile,
+            title = result.musicName,
+            artist = result.artist,
+            album = result.album,
+            cover = result.cover,
+        )
+    }
+
+    /** 将指定标签写回音频文件;成功返回 true,失败返回 false(不抛异常)。 */
+    fun embedTags(
+        audioFile: File,
+        title: String?,
+        artist: String?,
+        album: String?,
+        cover: ByteArray?,
+    ): Boolean {
         return try {
             val audio = AudioFileIO.read(audioFile)
             val tag = audio.tag ?: audio.createDefaultTag()
 
-            result.album?.let { tag.setField(FieldKey.ALBUM, it) }
-            result.musicName?.let { tag.setField(FieldKey.TITLE, it) }
-            result.artist?.let { tag.setField(FieldKey.ARTIST, it) }
+            album?.takeIf { it.isNotBlank() }?.let { tag.setField(FieldKey.ALBUM, it) }
+            title?.takeIf { it.isNotBlank() }?.let { tag.setField(FieldKey.TITLE, it) }
+            artist?.takeIf { it.isNotBlank() }?.let { tag.setField(FieldKey.ARTIST, it) }
 
-            result.cover?.takeIf { it.isNotEmpty() }?.let { cover ->
-                val image = ImageIO.read(ByteArrayInputStream(cover))
+            cover?.takeIf { it.isNotEmpty() }?.let { bytes ->
+                val image = ImageIO.read(ByteArrayInputStream(bytes))
                 if (image != null) {
                     val picture = MetadataBlockDataPicture(
-                        cover,
+                        bytes,
                         0,
-                        mimeTypeOf(cover),
+                        mimeTypeOf(bytes),
                         "",
                         image.width,
                         image.height,

@@ -21,6 +21,7 @@
 - 深/浅双主题一键切换
 - 拖拽或点击添加文件/文件夹，队列内逐文件显示格式、大小与状态
 - 按解密后音频内容做 SHA-256 去重（保留不带 `(N)` 后缀的文件）
+- 网易云下载：扫码登录 → 查看并多选歌单 → 下载 MP3（保留歌名/歌手/专辑/封面）或把下载任务提交到 Codex 任务面板「待立项」
 - 命令行批量转换与桌面 GUI 两用
 
 ## 支持格式
@@ -39,7 +40,7 @@
 ```bash
 ./gradlew run              # 启动桌面 GUI
 ./gradlew run --args="-h"  # 命令行帮助
-./gradlew test             # 运行测试（23 个，含 unlock-music 真实样本向量）
+./gradlew test             # 运行测试（41 个，含 unlock-music 真实样本向量）
 ```
 
 ## 图形界面使用说明
@@ -72,6 +73,31 @@
 | 已完成 | 转换成功，已写入输出目录 |
 | 失败 | 文件损坏或不支持，行内会显示具体原因 |
 | 重复 | 与队列中其他文件解密后内容相同，被去重跳过 |
+
+## 网易云下载
+
+顶部切换到「网易云下载」页，可把网易云歌单歌曲下载为 MP3，或把下载任务提交到任务面板统一管理。
+
+### 1. 扫码登录
+
+- 点击「获取二维码」，用网易云 App「扫一扫」完成登录；登录态仅保存在本次会话内。
+- 登录成功后界面展示账号昵称与头像；点「退出登录」即清除会话。
+
+### 2. 选择歌单
+
+- 登录后自动列出全部歌单（含收藏），显示封面、名称与歌曲数。
+- 支持勾选多个歌单，提供「全选 / 清空 / 刷新」。
+
+### 3. 下载 MP3
+
+- 点「下载 MP3」把选中歌单的歌曲下载到右侧输出目录（默认 `~/Music/MusicUnlock`）。
+- 按官方接口获取音频，高码率优先、不可用时自动降级；输出统一为 MP3，并写回歌名 / 歌手 / 专辑 / 封面。
+- 官方返回 FLAC 等非 MP3 格式时，自动调用系统 ffmpeg 转码为 MP3（未安装 ffmpeg 时保留原格式并提示）。
+
+### 4. 生成下载任务并提交
+
+- 点「生成下载任务并提交」，选中歌单逐首生成下载任务，通过 taskctl 提交到 Codex 任务面板（musicunlock 项目），状态为「待立项」（backlog）。
+- 每条任务包含歌曲名、歌手、来源歌单；右侧「记录」区实时显示提交结果与任务编号。
 
 ## 命令行
 
@@ -129,9 +155,13 @@ src/main/kotlin/musicunlock/
     KgmDecoder.kt  酷狗 KGM/KGMA/VPR
     KwmDecoder.kt  酷我 KWM
     AudioSniffer.kt / Formats.kt / MusicDecoder.kt
+  ncm/            网易云下载
+    NeteaseApi.kt     扫码登录（unikey+轮询）/ 账号 / 歌单 / 播放地址
+    Mp3Downloader.kt  官方下载、MP3 转码、标签写回
+    TaskboardClient.kt  taskctl 提交下载任务到任务面板
   service/        MusicConverter（转换编排）、TagWriter（标签写回）
   cli/            MainCli（命令行）
-  ui/             App.kt（Compose 界面）、Theme.kt（主题）、FileDialogs.kt
+  ui/             App.kt（双页签）、DownloadPage.kt（网易云下载页）、Theme.kt、FileDialogs.kt
 ```
 
 ## 算法来源与致谢
