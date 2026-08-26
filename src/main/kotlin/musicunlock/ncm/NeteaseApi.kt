@@ -1,13 +1,20 @@
 package musicunlock.ncm
 
+import java.math.BigInteger
 import java.net.CookieManager
 import java.net.CookiePolicy
+import java.net.HttpCookie
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Path
+import java.security.SecureRandom
 import java.time.Duration
+import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * 网易云官方网页端接口客户端。
@@ -33,6 +40,8 @@ object NeteaseApi {
         .followRedirects(HttpClient.Redirect.NORMAL)
         .build()
 
+
+
     private val commonHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$BASE/",
@@ -40,18 +49,86 @@ object NeteaseApi {
     )
 
     // ============================================================
+    //  weapi 加密（官方网页端登录接口要求）
+    // ============================================================
+
+    private const val WEAPI_PRESET_KEY = "0CoJUm6Qyw8W8jud"
+    private const val WEAPI_IV = "0102030405060708"
+    private const val WEAPI_BASE62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    private val WEAPI_RSA_MODULUS =
+        BigInteger("e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ecbda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe4875d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7", 16)
+    private val WEAPI_RSA_EXPONENT = BigInteger("010001", 16)
+    private val weapiRandom = SecureRandom()
+
+    /** 生成 weapi 请求体（params + encSecKey，application/x-www-form-urlencoded）。 */
+    private fun weapiBody(data: Map<String, Any?>): String {
+        val text = NeteaseJson.gson.toJson(data)
+        val secretKey = buildString {
+            repeat(16) { append(WEAPI_BASE62[weapiRandom.nextInt(WEAPI_BASE62.length)]) }
+        }
+        val params = aesEncrypt(aesEncrypt(text, WEAPI_PRESET_KEY), secretKey)
+        val encSecKey = rsaEncrypt(secretKey.reversed())
+        return "params=${encode(params)}&encSecKey=$encSecKey"
+    }
+
+    private fun aesEncrypt(text: String, key: String): String {
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(
+            Cipher.ENCRYPT_MODE,
+            SecretKeySpec(key.toByteArray(Charsets.UTF_8), "AES"),
+            IvParameterSpec(WEAPI_IV.toByteArray(Charsets.UTF_8)),
+        )
+        return Base64.getEncoder().encodeToString(cipher.doFinal(text.toByteArray(Charsets.UTF_8)))
+    }
+
+    /** 官方 weapi 的 RSA：把倒序 secretKey 作为大整数做裸 RSA，输出固定 256 位 hex。 */
+    private fun rsaEncrypt(text: String): String {
+        val m = BigInteger(1, text.toByteArray(Charsets.UTF_8))
+        val c = m.modPow(WEAPI_RSA_EXPONENT, WEAPI_RSA_MODULUS)
+        return c.toString(16).padStart(256, '0')
+    }
+
+    // ============================================================
     //  扫码登录
     // ============================================================
 
+    private var sessionPrimed = false
+
+    /** 当前扫码登录会话的 chainId（与官方网页端一致，同一会话复用）。 */
+    private var loginChainId: String? = null
+
+    /** 先访问官方首页，获得 os=pc 等会话 Cookie，模拟真实网页端登录环境。 */
+    private fun primeSession() {
+        if (sessionPrimed) return
+        runCatching {
+            val request = HttpRequest.newBuilder(URI.create("$BASE/"))
+                .headers(*commonHeaders.toHeaderArray())
+                .GET()
+                .timeout(Duration.ofSeconds(15))
+                .build()
+            client.send(request, HttpResponse.BodyHandlers.discarding())
+        }
+        sessionPrimed = true
+    }
+
+    private fun newLoginChainId(): String {
+        val randomNum = java.util.concurrent.ThreadLocalRandom.current().nextInt(1_000_000)
+        return "v1_unknown-$randomNum" + "_web_login_" + System.currentTimeMillis()
+    }
+
+    /** 官方网页端扫码登录附带的环境头。 */
+    private fun loginHeaders(): Map<String, String> = mapOf(
+        "x-loginmethod" to "QrCode",
+        "x-login-chain-id" to (loginChainId ?: newLoginChainId()),
+        "x-os" to "web",
+        "nm-gcore-status" to "1",
+    )
+
     /** 获取二维码 key（unikey）。 */
     fun qrKey(): String {
-        val body = "type=1"
-        val request = HttpRequest.newBuilder(URI.create("$BASE/api/login/qrcode/unikey"))
-            .headers(*commonHeaders.toHeaderArray())
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .POST(HttpRequest.BodyPublishers.ofString(body))
-            .build()
-        val raw = sendJson(request)
+        primeSession()
+        loginChainId = newLoginChainId()
+        val raw = postWeapi("/weapi/login/qrcode/unikey", linkedMapOf("type" to 3), loginHeaders())
         val resp = NeteaseJson.gson.fromJson(raw, RawUnikeyResponse::class.java)
         if (resp.code != 200) {
             throw IllegalStateException("获取登录二维码失败（code=${resp.code}）")
@@ -65,14 +142,89 @@ object NeteaseApi {
 
     /** 轮询扫码状态。 */
     fun qrCheck(key: String): QrCheckResult {
-        val uri = URI.create("$BASE/api/login/qrcode/client/login?key=${encode(key)}&type=1")
-        val request = HttpRequest.newBuilder(uri)
-            .headers(*commonHeaders.toHeaderArray())
-            .GET()
-            .build()
-        val raw = sendJson(request)
+        val raw = postWeapi("/weapi/login/qrcode/client/login", linkedMapOf("key" to key, "type" to 3), loginHeaders())
         return parseQrCheck(raw)
     }
+
+    // ============================================================
+    //  验证码登录（扫码登录被账号风控拦截时的备选方案）
+    // ============================================================
+
+    /** 向指定手机号发送登录验证码（参数与网易云官方网页登录页一致）。 */
+    fun sendSmsCode(phone: String): String {
+        val raw = postWeapi(
+            "/weapi/sms/captcha/sent",
+            linkedMapOf(
+                "secrete" to "music_user_login",
+                "cellphone" to phone,
+                "countrycode" to "86",
+            ),
+        )
+        val resp = NeteaseJson.gson.fromJson(raw, RawCode::class.java)
+        if (resp.code != 200) {
+            val msg = NeteaseJson.gson.fromJson(raw, RawQrCheckResponse::class.java).message
+            throw IllegalStateException(smsRiskMessage(resp.code, msg))
+        }
+        return "验证码已发送，请注意查收"
+    }
+
+    /** 使用官方网页登录后复制的 Cookie 登录（账号触发安全验证时的兜底方案）。 */
+    fun loginWithCookie(cookieHeader: String): NeteaseAccount {
+        cookieManager.cookieStore.removeAll()
+        val uri = URI.create("https://music.163.com")
+        cookieHeader.split(';').forEach { part ->
+            val kv = part.trim().split('=', limit = 2)
+            if (kv.size == 2 && kv[0].isNotBlank() && kv[1].isNotBlank()) {
+                val c = HttpCookie(kv[0].trim(), kv[1].trim())
+                c.domain = ".music.163.com"
+                c.path = "/"
+                cookieManager.cookieStore.add(uri, c)
+            }
+        }
+        return account() ?: throw IllegalStateException("Cookie 无效或已过期，请重新登录后复制")
+    }
+
+    /** 使用手机号 + 短信验证码登录，成功后返回账号信息。 */
+    fun loginWithSms(phone: String, captcha: String): NeteaseAccount {
+        val raw = postWeapi(
+            "/weapi/w/login/cellphone",
+            linkedMapOf(
+                "type" to "1",
+                "https" to "true",
+                "phone" to phone,
+                "countrycode" to "86",
+                "captcha" to captcha,
+                "remember" to "true",
+            ),
+        )
+        val acc = parseAccount(raw)
+        if (acc != null) return acc
+        val code = NeteaseJson.gson.fromJson(raw, RawCode::class.java).code
+        val msg = NeteaseJson.gson.fromJson(raw, RawQrCheckResponse::class.java).message
+        throw IllegalStateException("验证码登录失败（code=$code${msg?.let { "，$it" } ?: ""}）")
+    }
+
+    /** POST 到 weapi 接口（params + encSecKey 表单）。 */
+    private fun postWeapi(path: String, data: Map<String, Any?>, extraHeaders: Map<String, String> = emptyMap()): String {
+        val builder = HttpRequest.newBuilder(URI.create("$BASE$path"))
+            .headers(*commonHeaders.toHeaderArray())
+            .header("Content-Type", "application/x-www-form-urlencoded")
+        if (extraHeaders.isNotEmpty()) {
+            builder.headers(*extraHeaders.toHeaderArray())
+        }
+        val request = builder
+            .POST(HttpRequest.BodyPublishers.ofString(weapiBody(data)))
+            .build()
+        return sendJson(request)
+    }
+
+    /** 网易云风控返回码（验证码/扫码在当前网络不可用）时的友好提示。 */
+    private fun smsRiskMessage(code: Int, msg: String?): String =
+        if (code == -12 || code == -460 || code == 460) {
+            "当前网络触发网易云安全验证，验证码登录不可用，请使用「浏览器登录」"
+        } else {
+            "code=$code${msg?.let { "，$it" } ?: ""}"
+        }
 
     // ============================================================
     //  账号与歌单
@@ -177,6 +329,7 @@ object NeteaseApi {
             801 -> QrLoginState.WAIT
             802 -> QrLoginState.SCANNED
             803 -> QrLoginState.SUCCESS
+            8821 -> QrLoginState.RISK
             else -> QrLoginState.UNKNOWN
         }
         return QrCheckResult(state, resp.message)

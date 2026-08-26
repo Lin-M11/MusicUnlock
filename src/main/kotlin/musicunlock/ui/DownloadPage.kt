@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
@@ -28,14 +29,20 @@ import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,11 +55,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -67,6 +76,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import musicunlock.ncm.BrowserLogin
 import musicunlock.ncm.Mp3Downloader
 import musicunlock.ncm.NeteaseAccount
 import musicunlock.ncm.NeteaseApi
@@ -83,6 +93,9 @@ import kotlin.coroutines.cancellation.CancellationException
 /** 当前进行的批量操作。 */
 private enum class BatchAction { NONE, DOWNLOAD, SUBMIT }
 
+/** 登录方式。 */
+private enum class LoginMode { QR, SMS, BROWSER }
+
 /** 网易云下载页：扫码登录 → 选择歌单 → 下载 MP3 / 提交下载任务到任务面板。 */
 @Composable
 fun DownloadPage(modifier: Modifier = Modifier) {
@@ -94,6 +107,7 @@ fun DownloadPage(modifier: Modifier = Modifier) {
     var qrImage by remember { mutableStateOf<ImageBitmap?>(null) }
     var loginStatus by remember { mutableStateOf("") }
     var expired by remember { mutableStateOf(false) }
+    var loginMode by remember { mutableStateOf(LoginMode.QR) }
 
     var playlists by remember { mutableStateOf<List<NeteasePlaylist>>(emptyList()) }
     val selected = remember { mutableStateListOf<Long>() }
@@ -106,6 +120,18 @@ fun DownloadPage(modifier: Modifier = Modifier) {
     var doneCount by remember { mutableStateOf(0) }
     var failCount by remember { mutableStateOf(0) }
     val logLines = remember { mutableStateListOf<String>() }
+
+    // 登录成功：写入账号并加载歌单
+    val onLoggedIn: (NeteaseAccount) -> Unit = { acc ->
+        account = acc
+        loginStatus = "登录成功"
+        loadPlaylists(
+            scope = scope,
+            setPlaylists = { playlists = it },
+            setLoading = { loadingPlaylists = it },
+            setError = { playlistError = it },
+        )
+    }
 
     // 生成二维码
     LaunchedEffect(qrKey) {
@@ -131,19 +157,16 @@ fun DownloadPage(modifier: Modifier = Modifier) {
                     expired = true
                 }
                 QrLoginState.SCANNED -> loginStatus = "已扫码，请在手机上确认登录"
+                QrLoginState.RISK -> {
+                    loginStatus = "扫码已确认，但该账号触发网易云安全验证，无法完成扫码登录。请稍后重试；若仍失败，可在浏览器打开 music.163.com 登录一次后再试。"
+                    break
+                }
                 QrLoginState.SUCCESS -> {
                     val acc = withContext(Dispatchers.IO) {
                         runCatching { NeteaseApi.account() }.getOrNull()
                     }
                     if (acc != null) {
-                        account = acc
-                        loginStatus = "登录成功"
-                        loadPlaylists(
-                            scope = scope,
-                            setPlaylists = { playlists = it },
-                            setLoading = { loadingPlaylists = it },
-                            setError = { playlistError = it },
-                        )
+                        onLoggedIn(acc)
                     } else {
                         loginStatus = "登录状态获取失败，请重试"
                     }
@@ -164,6 +187,9 @@ fun DownloadPage(modifier: Modifier = Modifier) {
                 qrImage = qrImage,
                 loginStatus = loginStatus,
                 expired = expired,
+                loginMode = loginMode,
+                onLoginModeChange = { loginMode = it },
+                onLoggedIn = onLoggedIn,
                 onRefresh = {
                     scope.launch {
                         loginStatus = "正在获取二维码…"
@@ -275,9 +301,111 @@ private fun LoginCard(
     qrImage: ImageBitmap?,
     loginStatus: String,
     expired: Boolean,
+    loginMode: LoginMode,
+    onLoginModeChange: (LoginMode) -> Unit,
+    onLoggedIn: (NeteaseAccount) -> Unit,
     onRefresh: () -> Unit,
 ) {
     val t = cleanTokens()
+    val scope = rememberCoroutineScope()
+    var phone by remember { mutableStateOf("") }
+    var smsCode by remember { mutableStateOf("") }
+    var smsStatus by remember { mutableStateOf("") }
+    var smsBusy by remember { mutableStateOf(false) }
+    var countdown by remember { mutableStateOf(0) }
+    var cookieText by remember { mutableStateOf("") }
+    var cookieStatus by remember { mutableStateOf("") }
+    var cookieBusy by remember { mutableStateOf(false) }
+    var browserStatus by remember { mutableStateOf("") }
+    var browserBusy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(countdown) {
+        if (countdown > 0) {
+            delay(1000)
+            countdown -= 1
+        }
+    }
+
+    fun sendCode() {
+        if (phone.length != 11) {
+            smsStatus = "请输入 11 位手机号"
+            return
+        }
+        scope.launch {
+            smsBusy = true
+            smsStatus = "正在发送验证码…"
+            val result = withContext(Dispatchers.IO) {
+                runCatching { NeteaseApi.sendSmsCode(phone) }
+            }
+            result
+                .onSuccess {
+                    smsStatus = it
+                    countdown = 60
+                }
+                .onFailure { smsStatus = "发送失败：${it.message}" }
+            smsBusy = false
+        }
+    }
+
+    fun doLogin() {
+        if (phone.length != 11) {
+            smsStatus = "请输入 11 位手机号"
+            return
+        }
+        if (smsCode.isBlank()) {
+            smsStatus = "请输入短信验证码"
+            return
+        }
+        scope.launch {
+            smsBusy = true
+            smsStatus = "正在登录…"
+            val result = withContext(Dispatchers.IO) {
+                runCatching { NeteaseApi.loginWithSms(phone, smsCode) }
+            }
+            result
+                .onSuccess { onLoggedIn(it) }
+                .onFailure { smsStatus = "登录失败：${it.message}" }
+            smsBusy = false
+        }
+    }
+
+    fun doCookieLogin() {
+        if (cookieText.isBlank()) {
+            cookieStatus = "请粘贴 Cookie"
+            return
+        }
+        scope.launch {
+            cookieBusy = true
+            cookieStatus = "正在登录…"
+            val result = withContext(Dispatchers.IO) {
+                runCatching { NeteaseApi.loginWithCookie(cookieText.trim()) }
+            }
+            result
+                .onSuccess { onLoggedIn(it) }
+                .onFailure { cookieStatus = "登录失败：${it.message}" }
+            cookieBusy = false
+        }
+    }
+
+    fun doBrowserLogin() {
+        if (browserBusy) return
+        browserBusy = true
+        browserStatus = "正在启动浏览器…"
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                BrowserLogin.login(
+                    onStatus = { browserStatus = it },
+                    onResult = {
+                        browserStatus = "登录成功"
+                        onLoggedIn(it)
+                    },
+                    onError = { browserStatus = it },
+                )
+            }
+            browserBusy = false
+        }
+    }
+
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier
@@ -289,7 +417,7 @@ private fun LoginCard(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                "扫码登录网易云",
+                "登录网易云",
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = t.text,
@@ -300,60 +428,246 @@ private fun LoginCard(
                 fontSize = 12.5.sp,
                 color = t.textSecondary,
             )
-            Spacer(Modifier.height(20.dp))
-            Box(
-                modifier = Modifier
-                    .size(248.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(t.surfaceSoft)
-                    .border(1.dp, t.border, RoundedCornerShape(14.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (qrImage != null) {
-                    Image(
-                        bitmap = qrImage,
-                        contentDescription = "登录二维码",
-                        modifier = Modifier.size(232.dp),
-                    )
-                } else {
-                    Icon(
-                        Icons.Outlined.MusicNote,
-                        contentDescription = null,
-                        tint = t.textMuted.copy(alpha = 0.5f),
-                        modifier = Modifier.size(52.dp),
-                    )
-                }
-            }
             Spacer(Modifier.height(16.dp))
-            Text(
-                if (loginStatus.isBlank()) "点击下方按钮获取二维码" else loginStatus,
-                fontSize = 13.sp,
-                fontWeight = if (expired) FontWeight.Medium else FontWeight.Normal,
-                color = if (expired) t.error else t.textSecondary,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(14.dp))
-            Button(
-                onClick = onRefresh,
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = t.primary,
-                    contentColor = t.onPrimary,
-                ),
-                modifier = Modifier.height(44.dp),
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(t.surfaceSoft)
+                    .padding(3.dp),
             ) {
-                Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(if (qrImage == null) "获取二维码" else "刷新二维码", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                LoginModeTab("扫码登录", selected = loginMode == LoginMode.QR, modifier = Modifier.weight(1f), onClick = { onLoginModeChange(LoginMode.QR) })
+                LoginModeTab("验证码登录", selected = loginMode == LoginMode.SMS, modifier = Modifier.weight(1f), onClick = { onLoginModeChange(LoginMode.SMS) })
+                LoginModeTab("浏览器登录", selected = loginMode == LoginMode.BROWSER, modifier = Modifier.weight(1f), onClick = { onLoginModeChange(LoginMode.BROWSER) })
             }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "使用网易云 App「扫一扫」完成登录，登录态仅保存在本次会话内",
-                fontSize = 11.5.sp,
-                color = t.textMuted,
-                textAlign = TextAlign.Center,
+            Spacer(Modifier.height(18.dp))
+            if (loginMode == LoginMode.QR) {
+                Box(
+                    modifier = Modifier
+                        .size(248.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(t.surfaceSoft)
+                        .border(1.dp, t.border, RoundedCornerShape(14.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (qrImage != null) {
+                        Image(
+                            bitmap = qrImage,
+                            contentDescription = "登录二维码",
+                            modifier = Modifier.size(232.dp),
+                        )
+                    } else {
+                        Icon(
+                            Icons.Outlined.QrCodeScanner,
+                            contentDescription = null,
+                            tint = t.textMuted.copy(alpha = 0.5f),
+                            modifier = Modifier.size(52.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    if (loginStatus.isBlank()) "点击下方按钮获取二维码" else loginStatus,
+                    fontSize = 13.sp,
+                    fontWeight = if (expired) FontWeight.Medium else FontWeight.Normal,
+                    color = if (expired) t.error else t.textSecondary,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = onRefresh,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = t.primary,
+                        contentColor = t.onPrimary,
+                    ),
+                    modifier = Modifier.height(44.dp),
+                ) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (qrImage == null) "获取二维码" else "刷新二维码", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "使用网易云 App「扫一扫」完成登录；若账号触发安全验证，请改用验证码登录",
+                    fontSize = 11.5.sp,
+                    color = t.textMuted,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            val fieldColors = TextFieldDefaults.colors(
+                focusedContainerColor = t.surfaceSoft,
+                unfocusedContainerColor = t.surfaceSoft,
+                focusedTextColor = t.text,
+                unfocusedTextColor = t.text,
+                focusedIndicatorColor = t.primary,
+                unfocusedIndicatorColor = t.border,
+                cursorColor = t.primary,
             )
+            if (loginMode == LoginMode.SMS) {
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it.filter(Char::isDigit).take(11) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    placeholder = { Text("手机号", fontSize = 13.sp, color = t.textMuted) },
+                    colors = fieldColors,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = smsCode,
+                        onValueChange = { smsCode = it.filter(Char::isDigit).take(6) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        placeholder = { Text("短信验证码", fontSize = 13.sp, color = t.textMuted) },
+                        colors = fieldColors,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Button(
+                        onClick = { sendCode() },
+                        enabled = !smsBusy && countdown == 0,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = t.primarySoft,
+                            contentColor = t.primary,
+                        ),
+                        modifier = Modifier.height(56.dp),
+                    ) {
+                        Text(
+                            if (countdown > 0) "${countdown}s 后重发" else "发送验证码",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = { doLogin() },
+                    enabled = !smsBusy,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = t.primary,
+                        contentColor = t.onPrimary,
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                ) {
+                    if (smsBusy) {
+                        Text("请稍候…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    } else {
+                        Icon(Icons.Outlined.Smartphone, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (smsStatus.isBlank()) "验证码将发送到你的网易云绑定手机号" else smsStatus,
+                    fontSize = 12.5.sp,
+                    color = if (smsStatus.startsWith("登录失败") || smsStatus.startsWith("发送失败") || smsStatus.startsWith("请输入")) t.error else t.textSecondary,
+                    textAlign = TextAlign.Center,
+                )
+            } else {
+                Button(
+                    onClick = { doBrowserLogin() },
+                    enabled = !browserBusy,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = t.primary,
+                        contentColor = t.onPrimary,
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                ) {
+                    if (browserBusy) {
+                        Text("请稍候…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    } else {
+                        Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("打开浏览器自动登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (browserStatus.isBlank()) "将打开浏览器进入网易云登录页，登录成功后自动读取登录态" else browserStatus,
+                    fontSize = 12.5.sp,
+                    color = if (browserStatus.startsWith("登录失败") || browserStatus.startsWith("未找到") || browserStatus.startsWith("无法") || browserStatus.startsWith("等待登录超时")) t.error else t.textSecondary,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(14.dp))
+                HorizontalDivider(color = t.rowDivider)
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "浏览器不可用时，可手动粘贴 Cookie：",
+                    fontSize = 12.5.sp,
+                    color = t.textSecondary,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = cookieText,
+                    onValueChange = { cookieText = it },
+                    placeholder = { Text("MUSIC_U=xxx; NMTID=yyy; …", fontSize = 12.sp, color = t.textMuted) },
+                    colors = fieldColors,
+                    shape = RoundedCornerShape(12.dp),
+                    minLines = 3,
+                    maxLines = 5,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = { doCookieLogin() },
+                    enabled = !cookieBusy,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = t.primarySoft,
+                        contentColor = t.primary,
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                ) {
+                    if (cookieBusy) {
+                        Text("请稍候…", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    } else {
+                        Text("Cookie 登录", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (cookieStatus.isBlank()) "登录后 Cookie 仅保存在本次会话内" else cookieStatus,
+                    fontSize = 12.5.sp,
+                    color = if (cookieStatus.startsWith("登录失败") || cookieStatus.startsWith("请")) t.error else t.textSecondary,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun LoginModeTab(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val t = cleanTokens()
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) t.primary else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) t.onPrimary else t.textSecondary,
+        )
     }
 }
 

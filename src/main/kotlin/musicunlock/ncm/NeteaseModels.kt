@@ -134,7 +134,7 @@ class NeteaseSongUrl(
 )
 
 /** 二维码登录轮询结果。 */
-enum class QrLoginState { WAIT, SCANNED, EXPIRED, SUCCESS, UNKNOWN }
+enum class QrLoginState { WAIT, SCANNED, EXPIRED, SUCCESS, RISK, UNKNOWN }
 
 /** 二维码登录轮询结果。 */
 class QrCheckResult(val state: QrLoginState, val message: String?)
