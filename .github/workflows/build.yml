@@ -99,7 +99,7 @@ jobs:
           cp dist/MusicUnlock-macos/*.dmg assets/
           cp dist/MusicUnlock-windows/*.exe assets/
           VERSION="$GITHUB_REF_NAME"
-          gh release create "$VERSION" assets/* \
+          gh release create -R "$GITHUB_REPOSITORY" "$VERSION" assets/* \
             --title "MusicUnlock $VERSION" \
             --notes "**MusicUnlock $VERSION**
 
