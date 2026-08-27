@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.musicunlock"
-version = "1.0.0"
+version = "1.1.0"
 
 
 
@@ -40,7 +40,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "MusicUnlock"
-            packageVersion = "1.0.0"
+            packageVersion = "1.1.0"
             description = "MusicUnlock - convert encrypted music files to open audio formats"
             vendor = "MusicUnlock"
             licenseFile.set(project.file("LICENSE"))

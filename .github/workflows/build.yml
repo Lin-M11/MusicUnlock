@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ macos-latest, windows-latest, ubuntu-latest ]
+        os: [ macos-latest, windows-latest ]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -36,34 +36,43 @@ jobs:
         run: ./gradlew test
 
       # jpackage 打包必须在目标操作系统上进行(Compose 官方限制)
+      # macOS：发布产物为 dmg
       - name: Package (macOS .dmg)
         if: runner.os == 'macOS'
         run: ./gradlew packageDmg
 
-      # Windows 安装器(jpackage --type exe 依赖 WiX)在 CI 上不稳定,
-      # 改用 createDistributable 生成 exe + 自带 JRE 的目录, 再打成 zip
-      - name: Package (Windows .exe zip)
+      # Windows：发布产物为单文件 exe。
+      # createDistributable 生成 exe + 自带 JRE 的应用目录，再用 7-Zip SFX
+      # (sfx + config + .7z 拼接) 封装为单文件，双击自动解压到临时目录运行，退出后清理。
+      - name: Package (Windows single exe)
         if: runner.os == 'Windows'
         run: |
           ./gradlew createDistributable || { echo "=== jpackage ERR logs ==="; cat build/compose/logs/createDistributable/*err.txt 2>/dev/null; echo "=== jpackage OUT logs ==="; cat build/compose/logs/createDistributable/*out.txt 2>/dev/null; exit 1; }
-          powershell -Command "Compress-Archive -Path 'build/compose/binaries/main/app/MusicUnlock' -DestinationPath 'MusicUnlock-windows.zip' -Force"
-          ls -la MusicUnlock-windows.zip
+          VERSION=$(grep -m1 '^version' build.gradle.kts | sed -E 's/version = "([^"]+)"/\1/')
+          SEVENZIP=$(cygpath -u "$PROGRAMFILES/7-Zip/7z.exe")
+          if [ ! -f "$SEVENZIP" ]; then
+            powershell -Command "choco install 7zip.install -y --no-progress"
+            SEVENZIP=$(cygpath -u "$PROGRAMFILES/7-Zip/7z.exe")
+          fi
+          cd build/compose/binaries/main/app/MusicUnlock
+          "$SEVENZIP" a -t7z -mx=7 -y "$OLDPWD/build/MusicUnlock.7z" "*"
+          cd "$OLDPWD"
+          cat packaging/windows/7zsd_All_x64.sfx packaging/windows/sfx-config.txt build/MusicUnlock.7z > "MusicUnlock-$VERSION-windows.exe"
+          ls -la "MusicUnlock-$VERSION-windows.exe"
+          file "MusicUnlock-$VERSION-windows.exe" || true
 
-      - name: Install Linux packaging deps
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg rpm
-
-      - name: Package (Linux .deb/.rpm)
-        if: runner.os == 'Linux'
-        run: ./gradlew packageDeb packageRpm
-
-      - name: Upload installers
+      - name: Upload macOS dmg
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: MusicUnlock-${{ runner.os }}
+          name: MusicUnlock-macos
           if-no-files-found: error
-          path: |
-            build/compose/binaries/main/dmg/*.dmg
-            MusicUnlock-windows.zip
-            build/compose/binaries/main/deb/*.deb
-            build/compose/binaries/main/rpm/*.rpm
+          path: build/compose/binaries/main/dmg/*.dmg
+
+      - name: Upload Windows exe
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicUnlock-windows
+          if-no-files-found: error
+          path: MusicUnlock-*-windows.exe

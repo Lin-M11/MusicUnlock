@@ -135,17 +135,18 @@
 - **转换后文件在哪？** GUI 默认输出到 `~/Music/MusicUnlock`，可在右侧「输出目录」查看或更改；命令行默认 `./output`，用 `-o` 指定。
 - **转换失败怎么办？** 队列行内会显示具体原因（如文件已损坏、格式不支持）。解密算法基于公开格式规范，仅适用于合法获取的文件。
 - **为什么会显示「重复」？** 开启了去重且该文件解密后的音频与队列中其他文件相同，属正常跳过。
-- **打包版双击后如何打开？** macOS `.dmg/.pkg`、Windows `.msi/.exe`、Linux `.deb/.rpm` 安装后直接启动应用，无参数默认进入图形界面。
+- **打包版双击后如何打开？** macOS 打开 `.dmg` 后把 MusicUnlock 拖入「应用程序」即可启动；Windows 直接双击单文件 `MusicUnlock.exe`（内嵌 JRE，首次启动自动解压到临时目录运行，退出后自动清理），无参数默认进入图形界面。
 
 ## 原生打包（需在对应操作系统上执行）
 
 ```bash
-./gradlew packageDmg       # macOS .dmg / .pkg
-./gradlew packageMsi       # Windows .msi / .exe
-./gradlew packageDeb       # Linux .deb / .rpm
+./gradlew packageDmg              # macOS .dmg
+./gradlew createDistributable     # Windows exe + 自带 JRE 的应用目录
 ```
 
-三平台一键打包见 [.github/workflows/build.yml](.github/workflows/build.yml)（GitHub Actions 矩阵）。
+- macOS 发布物为 `.dmg`。
+- Windows 发布物为单文件 `MusicUnlock-<版本>-windows.exe`：由 7-Zip SFX 封装，内嵌 JRE，无外部资源文件，双击自动解压到临时目录运行、退出后自动清理。
+- 跨平台一键打包见 [.github/workflows/build.yml](.github/workflows/build.yml)（GitHub Actions 矩阵：macOS + Windows）。
 
 ## 项目结构
 
