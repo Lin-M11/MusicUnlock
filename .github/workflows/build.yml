@@ -3,6 +3,7 @@ name: Build (Compose Desktop)
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
 
@@ -76,3 +77,32 @@ jobs:
           name: MusicUnlock-windows
           if-no-files-found: error
           path: MusicUnlock-*-windows.exe
+
+  # 打 v* 标签时自动发布：把构建产物直接上传为 GitHub Release（无需本地中转）
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          mkdir -p assets
+          cp dist/MusicUnlock-macos/*.dmg assets/
+          cp dist/MusicUnlock-windows/*.exe assets/
+          VERSION="$GITHUB_REF_NAME"
+          gh release create "$VERSION" assets/* \
+            --title "MusicUnlock $VERSION" \
+            --notes "**MusicUnlock $VERSION**
+
+            - **Windows**：单文件 \`MusicUnlock-$VERSION-windows.exe\`，内嵌 JRE，无外部资源文件，双击直接运行（首次启动自动解压到临时目录，退出后自动清理）
+            - **macOS**：\`MusicUnlock-$VERSION.dmg\` 磁盘映像，拖入「应用程序」即可
+            - 产物未签名，首次运行如遇系统安全提示，请选择「仍要运行 / 打开」"
