@@ -23,19 +23,19 @@ object Mp3Downloader {
 
     private val BITRATES = listOf(320_000, 192_000, 128_000)
     private const val FALLBACK_EXT = "mp3"
+    private const val GRAY_SONG_MESSAGE = "获取播放地址失败（灰色歌曲：无版权或已下架，无法下载）"
 
     /** 下载单曲为 MP3 并写回标签。 */
     fun downloadAsMp3(song: NeteaseSong, outputDir: File): DownloadOutcome {
         return try {
             outputDir.mkdirs()
 
-            // 1. 高码率优先，不可用降级
+            // 1. 高码率优先，不可用降级；试听片段与灰色歌曲直接给出明确原因
             val songUrl = BITRATES.asSequence()
                 .mapNotNull { br -> runCatching { NeteaseApi.songUrl(song.id, br) }.getOrNull() }
                 .firstOrNull()
-            if (songUrl == null) {
-                return DownloadOutcome(false, null, "获取播放地址失败（可能为会员/下架歌曲）")
-            }
+                ?: return DownloadOutcome(false, null, GRAY_SONG_MESSAGE)
+            unavailableReason(songUrl)?.let { return DownloadOutcome(false, null, it) }
 
             // 2. 下载到临时文件
             val temp = File.createTempFile("musicunlock-", ".part", outputDir)
@@ -88,6 +88,17 @@ object Mp3Downloader {
         } catch (e: Exception) {
             DownloadOutcome(false, null, e.message ?: e.toString())
         }
+    }
+
+    /**
+     * 播放地址不可用时的明确原因；返回 null 表示地址可用可正常下载。
+     * - 地址为 null：灰色歌曲（无版权/已下架），登录会员也无法获取
+     * - 地址为试听片段：会员/数字专辑歌曲，当前账号无对应权限，仅返回试听
+     */
+    internal fun unavailableReason(url: NeteaseSongUrl?): String? = when {
+        url == null -> GRAY_SONG_MESSAGE
+        url.isTrial -> "仅可获取试听片段（当前账号无会员/数字专辑权限），已跳过下载"
+        else -> null
     }
 
     /** 探测下载内容的真实扩展名：优先取接口返回的 type，其次按内容嗅探。 */

@@ -91,4 +91,18 @@ class NeteaseApiParsingTest {
         val json = """{"code":200,"data":[{"id":1,"url":null,"br":320000,"size":0,"type":"mp3"}]}"""
         assertNull(NeteaseApi.parseSongUrl(json, 1L, 320000))
     }
+
+    @Test
+    fun `带 freeTrialInfo 的地址标记为试听片段`() {
+        val json = """{"code":200,"data":[{"id":1,"url":"http://m701.music.126.net/trial.mp3","br":128000,"size":602112,"type":"mp3","freeTrialInfo":{"start":0,"end":60000}}]}"""
+        val url = NeteaseApi.parseSongUrl(json, 1L, 128000)
+        assertTrue(url?.isTrial == true)
+    }
+
+    @Test
+    fun `无 freeTrialInfo 的地址不是试听片段`() {
+        val json = """{"code":200,"data":[{"id":1,"url":"http://m701.music.126.net/full.mp3","br":320000,"size":8421165,"type":"mp3"}]}"""
+        val url = NeteaseApi.parseSongUrl(json, 1L, 320000)
+        assertTrue(url?.isTrial == false)
+    }
 }

@@ -94,6 +94,13 @@ internal class RawSongUrl {
     var br: Int = 0
     var size: Long = 0
     var type: String? = null
+    /** 官方返回的试听信息；非 null 表示该 url 仅为试听片段。 */
+    var freeTrialInfo: RawFreeTrialInfo? = null
+}
+
+internal class RawFreeTrialInfo {
+    var start: Int = 0
+    var end: Int = 0
 }
 
 // ---- 领域模型 ----
@@ -131,6 +138,8 @@ class NeteaseSongUrl(
     val br: Int,
     val type: String?,
     val size: Long,
+    /** 是否为试听片段（当前账号无会员/数字专辑权限时官方返回）。 */
+    val isTrial: Boolean = false,
 )
 
 /** 二维码登录轮询结果。 */

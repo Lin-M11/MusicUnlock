@@ -2,6 +2,7 @@ package musicunlock
 
 import musicunlock.ncm.Mp3Downloader
 import musicunlock.ncm.NeteaseSong
+import musicunlock.ncm.NeteaseSongUrl
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -39,5 +40,24 @@ class Mp3DownloaderTest {
     fun `缺失歌手时使用占位`() {
         val song = NeteaseSong(id = 3L, name = "纯音乐", artists = emptyList(), albumName = null, albumPicUrl = null)
         assertEquals("纯音乐 - 未知歌手", Mp3Downloader.songBaseName(song))
+    }
+
+    @Test
+    fun `灰色歌曲无播放地址时给出明确原因`() {
+        val reason = Mp3Downloader.unavailableReason(null)
+        assert(reason != null && reason.contains("灰色歌曲"))
+    }
+
+    @Test
+    fun `试听片段给出会员权限提示`() {
+        val trial = NeteaseSongUrl(id = 1L, url = "https://m701.music.126.net/trial.mp3", br = 128000, type = "mp3", size = 602112, isTrial = true)
+        val reason = Mp3Downloader.unavailableReason(trial)
+        assert(reason != null && reason.contains("试听片段"))
+    }
+
+    @Test
+    fun `完整地址可正常下载`() {
+        val full = NeteaseSongUrl(id = 1L, url = "https://m701.music.126.net/full.mp3", br = 320000, type = "mp3", size = 8421165, isTrial = false)
+        assert(Mp3Downloader.unavailableReason(full) == null)
     }
 }

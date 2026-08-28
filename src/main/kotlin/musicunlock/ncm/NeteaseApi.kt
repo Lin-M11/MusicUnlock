@@ -396,6 +396,7 @@ object NeteaseApi {
             br = item.br,
             type = item.type,
             size = item.size,
+            isTrial = item.freeTrialInfo != null,
         )
     }
 
