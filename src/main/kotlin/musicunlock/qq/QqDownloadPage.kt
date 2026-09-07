@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
@@ -264,7 +265,7 @@ fun QqDownloadPage(modifier: Modifier = Modifier) {
 //  登录卡片
 // ============================================================
 
-private enum class QqLoginMode { QR, COOKIE }
+private enum class QqLoginMode { QR, BROWSER, COOKIE }
 
 @Composable
 private fun QqLoginCard(
@@ -281,6 +282,8 @@ private fun QqLoginCard(
     var cookieText by remember { mutableStateOf("") }
     var cookieStatus by remember { mutableStateOf("") }
     var cookieBusy by remember { mutableStateOf(false) }
+    var browserStatus by remember { mutableStateOf("") }
+    var browserBusy by remember { mutableStateOf(false) }
 
     fun doCookieLogin() {
         if (cookieText.isBlank()) {
@@ -299,6 +302,31 @@ private fun QqLoginCard(
             cookieBusy = false
         }
     }
+
+    fun doBrowserLogin() {
+        if (browserBusy) return
+        browserBusy = true
+        browserStatus = "正在启动浏览器…"
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                QqBrowserLogin.login(
+                    onStatus = { browserStatus = it },
+                    onResult = {
+                        browserStatus = "登录成功"
+                        onLoggedIn(it)
+                    },
+                    onError = { browserStatus = it },
+                )
+            }
+            browserBusy = false
+        }
+    }
+
+    fun isBrowserError(status: String): Boolean =
+        status.startsWith("未找到") ||
+            status.startsWith("无法") ||
+            status.startsWith("浏览器登录失败") ||
+            status.startsWith("等待登录超时")
 
     val fieldColors = TextFieldDefaults.colors(
         focusedContainerColor = t.surface,
@@ -337,6 +365,7 @@ private fun QqLoginCard(
                     .padding(3.dp),
             ) {
                 QqLoginModeTab("扫码登录", selected = loginMode == QqLoginMode.QR, modifier = Modifier.weight(1f)) { onLoginModeChange(QqLoginMode.QR) }
+                QqLoginModeTab("浏览器登录", selected = loginMode == QqLoginMode.BROWSER, modifier = Modifier.weight(1f)) { onLoginModeChange(QqLoginMode.BROWSER) }
                 QqLoginModeTab("Cookie 登录", selected = loginMode == QqLoginMode.COOKIE, modifier = Modifier.weight(1f)) { onLoginModeChange(QqLoginMode.COOKIE) }
             }
             Spacer(Modifier.height(18.dp))
@@ -384,6 +413,43 @@ private fun QqLoginCard(
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "扫码后请在手机上确认登录",
+                    fontSize = 12.sp,
+                    color = t.textMuted,
+                    textAlign = TextAlign.Center,
+                )
+            } else if (loginMode == QqLoginMode.BROWSER) {
+                Button(
+                    onClick = { doBrowserLogin() },
+                    enabled = !browserBusy,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = t.primary,
+                        contentColor = t.onPrimary,
+                        disabledContainerColor = t.surfaceSoft,
+                        disabledContentColor = t.textMuted,
+                    ),
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                ) {
+                    if (browserBusy) {
+                        Text("请稍候…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    } else {
+                        Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("打开浏览器自动登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (browserStatus.isBlank()) "将自动打开本机浏览器进入 QQ 音乐登录页，登录成功后自动读取登录态" else browserStatus,
+                    fontSize = 12.5.sp,
+                    color = if (isBrowserError(browserStatus)) t.error else t.textSecondary,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(14.dp))
+                HorizontalDivider(color = t.rowDivider)
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "浏览器不可用时，可在「Cookie 登录」中粘贴完整 Cookie",
                     fontSize = 12.sp,
                     color = t.textMuted,
                     textAlign = TextAlign.Center,
