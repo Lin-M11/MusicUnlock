@@ -96,6 +96,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import musicunlock.core.Formats
+import musicunlock.qq.QqDownloadPage
 import musicunlock.service.MusicConverter
 import java.awt.Desktop
 import java.awt.datatransfer.DataFlavor
@@ -164,7 +165,7 @@ fun MainScreen(dark: Boolean, onToggleDark: () -> Unit) {
             totalCount = files.size,
         )
 
-        // ---- 页签:格式转换 / 网易云下载 ----
+        // ---- 页签:格式转换 / 网易云下载 / QQ 音乐下载 ----
         PageTabs(page = page, onSelect = { page = it })
 
         if (page == 0) {
@@ -244,8 +245,10 @@ fun MainScreen(dark: Boolean, onToggleDark: () -> Unit) {
                     }
                 },
             )
-        } else {
+        } else if (page == 1) {
             DownloadPage(modifier = Modifier.weight(1f).fillMaxWidth())
+        } else {
+            QqDownloadPage(modifier = Modifier.weight(1f).fillMaxWidth())
         }
     }
 }
@@ -267,6 +270,7 @@ private fun PageTabs(page: Int, onSelect: (Int) -> Unit) {
     ) {
         TabItem(modifier = Modifier.weight(1f), label = "格式转换", selected = page == 0) { onSelect(0) }
         TabItem(modifier = Modifier.weight(1f), label = "网易云下载", selected = page == 1) { onSelect(1) }
+        TabItem(modifier = Modifier.weight(1f), label = "QQ 音乐下载", selected = page == 2) { onSelect(2) }
     }
 }
 
