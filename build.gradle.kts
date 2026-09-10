@@ -38,6 +38,8 @@ compose.desktop {
         mainClass = "musicunlock.MainKt"
 
         nativeDistributions {
+            // 运行时需要 java.net.http（网易云/QQ 音乐接口与浏览器登录的 CDP 通信）
+            modules("java.net.http")
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "MusicUnlock"
             packageVersion = "1.1.0"

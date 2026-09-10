@@ -22,7 +22,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Logout
@@ -265,7 +264,7 @@ fun QqDownloadPage(modifier: Modifier = Modifier) {
 //  登录卡片
 // ============================================================
 
-private enum class QqLoginMode { QR, BROWSER, COOKIE }
+private enum class QqLoginMode { QR, BROWSER }
 
 @Composable
 private fun QqLoginCard(
@@ -329,8 +328,8 @@ private fun QqLoginCard(
             status.startsWith("等待登录超时")
 
     val fieldColors = TextFieldDefaults.colors(
-        focusedContainerColor = t.surface,
-        unfocusedContainerColor = t.surface,
+        focusedContainerColor = t.surfaceSoft,
+        unfocusedContainerColor = t.surfaceSoft,
         focusedIndicatorColor = t.primary,
         unfocusedIndicatorColor = t.border,
         focusedTextColor = t.text,
@@ -366,7 +365,6 @@ private fun QqLoginCard(
             ) {
                 QqLoginModeTab("扫码登录", selected = loginMode == QqLoginMode.QR, modifier = Modifier.weight(1f)) { onLoginModeChange(QqLoginMode.QR) }
                 QqLoginModeTab("浏览器登录", selected = loginMode == QqLoginMode.BROWSER, modifier = Modifier.weight(1f)) { onLoginModeChange(QqLoginMode.BROWSER) }
-                QqLoginModeTab("Cookie 登录", selected = loginMode == QqLoginMode.COOKIE, modifier = Modifier.weight(1f)) { onLoginModeChange(QqLoginMode.COOKIE) }
             }
             Spacer(Modifier.height(18.dp))
             if (loginMode == QqLoginMode.QR) {
@@ -417,7 +415,7 @@ private fun QqLoginCard(
                     color = t.textMuted,
                     textAlign = TextAlign.Center,
                 )
-            } else if (loginMode == QqLoginMode.BROWSER) {
+            } else {
                 Button(
                     onClick = { doBrowserLogin() },
                     enabled = !browserBusy,
@@ -449,14 +447,7 @@ private fun QqLoginCard(
                 HorizontalDivider(color = t.rowDivider)
                 Spacer(Modifier.height(14.dp))
                 Text(
-                    "浏览器不可用时，可在「Cookie 登录」中粘贴完整 Cookie",
-                    fontSize = 12.sp,
-                    color = t.textMuted,
-                    textAlign = TextAlign.Center,
-                )
-            } else {
-                Text(
-                    "在浏览器登录 https://y.qq.com 后，从开发者工具复制完整 Cookie 粘贴到此处。",
+                    "浏览器不可用时，可手动粘贴 Cookie：",
                     fontSize = 12.5.sp,
                     color = t.textSecondary,
                     textAlign = TextAlign.Center,
@@ -478,24 +469,22 @@ private fun QqLoginCard(
                     enabled = !cookieBusy,
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = t.primary,
-                        contentColor = t.onPrimary,
+                        containerColor = t.primarySoft,
+                        contentColor = t.primary,
                         disabledContainerColor = t.surfaceSoft,
                         disabledContentColor = t.textMuted,
                     ),
-                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
                 ) {
                     if (cookieBusy) {
-                        Text("请稍候…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text("请稍候…", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     } else {
-                        Icon(Icons.Outlined.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Cookie 登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Cookie 登录", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    if (cookieStatus.isBlank()) "Cookie 仅保存在本次会话内" else cookieStatus,
+                    if (cookieStatus.isBlank()) "登录后 Cookie 仅保存在本次会话内" else cookieStatus,
                     fontSize = 12.5.sp,
                     color = if (cookieStatus.startsWith("登录失败") || cookieStatus.startsWith("请")) t.error else t.textSecondary,
                     textAlign = TextAlign.Center,
