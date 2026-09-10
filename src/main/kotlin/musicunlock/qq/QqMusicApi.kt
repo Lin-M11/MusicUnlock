@@ -65,7 +65,13 @@ object QqMusicApi {
         clearSession()
         val t = "0.${random.nextInt(1_000_000_000)}"
         val url = "https://ssl.ptlogin2.qq.com/ptqrshow?appid=716027609&e=2&l=M&s=3&d=72&v=4&t=$t&daid=383&pt_3rd_aid=100497308"
-        val resp = getRaw(url, mapOf("Referer" to "https://xui.ptlogin2.qq.com/"))
+        val resp = getRaw(
+            url,
+            mapOf(
+                "Referer" to "https://xui.ptlogin2.qq.com/",
+                "User-Agent" to USER_AGENT,
+            ),
+        )
         checkStatus(resp, "获取登录二维码失败")
         mergeCookies(resp.setCookies)
         val sig = cookieJar["qrsig"]
@@ -77,8 +83,46 @@ object QqMusicApi {
     /** 轮询扫码状态；返回 SUCCESS 后需调用 [finishQrLogin] 完成登录。 */
     fun pollQr(): QqQrResult {
         val sig = qrsig ?: throw IllegalStateException("二维码已失效，请刷新")
+        val resp = getRaw(
+            "https://ssl.ptlogin2.qq.com/ptqrlogin?${qrPollQuery(sig)}",
+            mapOf(
+                "Referer" to "https://xui.ptlogin2.qq.com/",
+                "User-Agent" to USER_AGENT,
+                "Cookie" to "qrsig=$sig",
+            ),
+        )
+        if (resp.status == 403) {
+            throw IllegalStateException("QQ 扫码状态接口拒绝了请求，请刷新二维码；若仍失败，请改用浏览器登录")
+        }
+        checkStatus(resp, "登录状态查询失败")
+        mergeCookies(resp.setCookies)
+        val parsed = parseQrCallback(String(resp.body, Charsets.UTF_8))
+        return when (parsed.code) {
+            0 -> {
+                if (parsed.url.isNullOrBlank()) {
+                    QqQrResult(QqLoginState.ERROR, "登录成功但未返回跳转地址，请重试")
+                } else {
+                    qrLoginUrl = parsed.url
+                    QqQrResult(QqLoginState.SUCCESS, null)
+                }
+            }
+            65 -> QqQrResult(QqLoginState.EXPIRED, "二维码已失效，请刷新")
+            66 -> QqQrResult(QqLoginState.WAIT, "等待扫码")
+            67 -> QqQrResult(QqLoginState.SCANNED, "已扫码，请在手机上确认登录")
+            else -> QqQrResult(
+                QqLoginState.ERROR,
+                parsed.message ?: "QQ 登录状态异常（code=${parsed.code}），请刷新后重试",
+            )
+        }
+    }
+
+    /** check_sig 的 2xx / 3xx 都可能表示有效跳转。 */
+    internal fun isLoginValidationStatus(status: Int): Boolean = status in 200..399
+
+    /** QQ 当前网页端轮询参数；has_onekey 缺失会被服务端按旧客户端拦截。 */
+    internal fun qrPollQuery(sig: String): String {
         val ts = System.currentTimeMillis()
-        val query = buildQuery(
+        return buildQuery(
             "u1" to "https://graph.qq.com/oauth2.0/login_jump",
             "ptqrtoken" to hash33(sig).toString(),
             "ptredirect" to "0",
@@ -95,28 +139,8 @@ object QqMusicApi {
             "aid" to "716027609",
             "daid" to "383",
             "pt_3rd_aid" to "100497308",
+            "has_onekey" to "1",
         )
-        val resp = getRaw(
-            "https://ssl.ptlogin2.qq.com/ptqrlogin?$query",
-            mapOf("Referer" to "https://xui.ptlogin2.qq.com/", "Cookie" to "qrsig=$sig"),
-        )
-        checkStatus(resp, "登录状态查询失败")
-        mergeCookies(resp.setCookies)
-        val parsed = parseQrCallback(String(resp.body, Charsets.UTF_8))
-        return when {
-            parsed.code == 0 -> {
-                if (parsed.url.isNullOrBlank()) {
-                    QqQrResult(QqLoginState.ERROR, "登录成功但未返回跳转地址，请重试")
-                } else {
-                    qrLoginUrl = parsed.url
-                    QqQrResult(QqLoginState.SUCCESS, null)
-                }
-            }
-            parsed.code == 65 -> QqQrResult(QqLoginState.EXPIRED, "二维码已失效，请刷新")
-            parsed.code == 66 -> QqQrResult(QqLoginState.WAIT, "等待扫码")
-            parsed.code == 67 -> QqQrResult(QqLoginState.SCANNED, "已扫码，请在手机上确认登录")
-            else -> QqQrResult(QqLoginState.WAIT, null)
-        }
     }
 
     /** 扫码确认后完成授权，返回登录账号。 */
@@ -126,10 +150,31 @@ object QqMusicApi {
         qrLoginUrl = null
 
         // Step 1：访问 ptqrlogin 返回的 check_sig 地址，换取 p_skey
-        val checkResp = getRaw(toAbsoluteHttps(loginUrl), mapOf("Referer" to "https://xui.ptlogin2.qq.com/"))
-        checkStatus(checkResp, "QQ 登录校验失败")
+        var validationUrl = toAbsoluteHttps(loginUrl)
+        var checkResp = getRaw(
+            validationUrl,
+            loginHeaders(),
+        )
+        if (!isLoginValidationStatus(checkResp.status)) {
+            throw IllegalStateException("QQ 登录校验失败（HTTP ${checkResp.status}）")
+        }
         mergeCookies(checkResp.setCookies)
-        val pSkey = cookieJar["p_skey"]
+
+        // check_sig 正常会返回 302；p_skey 可能落在首个响应或后续跳转响应中。
+        var redirect = checkResp.location
+        var redirectCount = 0
+        while (cookieJar["p_skey"].isNullOrBlank() && !redirect.isNullOrBlank() && redirectCount < 5) {
+            validationUrl = resolveRedirect(validationUrl, redirect)
+            checkResp = getRaw(validationUrl, loginHeaders())
+            if (!isLoginValidationStatus(checkResp.status)) {
+                throw IllegalStateException("QQ 登录校验失败（HTTP ${checkResp.status}）")
+            }
+            mergeCookies(checkResp.setCookies)
+            redirect = checkResp.location
+            redirectCount++
+        }
+
+        val pSkey = cookieJar["p_skey"]?.takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("QQ 登录失败：未获取到 p_skey（账号可能触发安全验证，请改用浏览器登录后粘贴 Cookie）")
         val gtk = hash33(pSkey, 5381)
 
@@ -154,7 +199,8 @@ object QqMusicApi {
             form,
             mapOf(
                 "Content-Type" to "application/x-www-form-urlencoded",
-                "Referer" to "https://xui.ptlogin2.qq.com/",
+                "Referer" to "https://graph.qq.com/oauth2.0/login_jump",
+                "User-Agent" to USER_AGENT,
                 "Cookie" to cookieHeader(),
             ),
         )
@@ -190,6 +236,7 @@ object QqMusicApi {
                 "Content-Type" to "application/json;charset=UTF-8",
                 "Referer" to "https://y.qq.com/",
                 "Origin" to "https://y.qq.com",
+                "User-Agent" to USER_AGENT,
                 "Cookie" to cookieHeader(),
             ),
         )
@@ -243,6 +290,12 @@ object QqMusicApi {
             throw IllegalStateException("Cookie 无效或已过期，请重新登录后复制")
         }
     }
+
+    /** 恢复上次保存的登录 Cookie；失效时抛出异常。 */
+    fun restoreSession(cookieHeader: String): QqAccount = loginWithCookie(cookieHeader)
+
+    /** 导出当前登录凭证，供配置文件保存。 */
+    fun exportSessionCookie(): String? = credential?.let { musicuCookie(it) }
 
     // ============================================================
     //  账号 / 歌单 / 歌曲 / 播放地址
@@ -698,6 +751,16 @@ object QqMusicApi {
 
     private fun cookieHeader(): String =
         cookieJar.entries.joinToString("; ") { (k, v) -> "$k=$v" }
+
+    private fun loginHeaders(): Map<String, String> = mapOf(
+        "Referer" to "https://xui.ptlogin2.qq.com/",
+        "User-Agent" to USER_AGENT,
+        "Cookie" to cookieHeader(),
+    )
+
+    private fun resolveRedirect(baseUrl: String, location: String): String =
+        runCatching { URI.create(baseUrl).resolve(location).toString() }
+            .getOrElse { toAbsoluteHttps(location) }
 
     internal fun parseCookieHeader(header: String): Map<String, String> {
         val out = LinkedHashMap<String, String>()

@@ -2,6 +2,7 @@ package musicunlock
 
 import musicunlock.qq.QqMusicApi
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -25,6 +26,21 @@ class QqApiParsingTest {
         assertNotNull(success.url)
         assertTrue(success.url!!.contains("ptsigx=abcDEF"))
         assertTrue(success.url!!.contains("uin=12345"))
+    }
+
+    @Test
+    fun `QQ 扫码轮询携带 onekey 标记`() {
+        val query = QqMusicApi.qrPollQuery("qrsig-demo")
+        assertTrue(query.contains("has_onekey=1"))
+        assertTrue(query.contains("aid=716027609"))
+        assertTrue(query.contains("pt_3rd_aid=100497308"))
+    }
+
+    @Test
+    fun `QQ 登录校验接受重定向状态`() {
+        assertTrue(QqMusicApi.isLoginValidationStatus(200))
+        assertTrue(QqMusicApi.isLoginValidationStatus(302))
+        assertFalse(QqMusicApi.isLoginValidationStatus(403))
     }
 
     @Test
