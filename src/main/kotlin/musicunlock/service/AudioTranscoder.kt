@@ -1,0 +1,69 @@
+package musicunlock.service
+
+import java.io.File
+import java.util.concurrent.TimeUnit
+
+/** 通过系统 ffmpeg 进行音频转码。 */
+object AudioTranscoder {
+
+    /** 转码为指定码率的 MP3；成功返回 null，失败返回可直接展示的原因。 */
+    fun toMp3(input: File, output: File, bitrateKbps: Int): String? {
+        val ffmpeg = locateFfmpeg()
+            ?: return "未找到 ffmpeg，无法输出 MP3。请安装 ffmpeg 后重试"
+        val command = listOf(
+            ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-i", input.absolutePath,
+            "-vn",
+            "-codec:a", "libmp3lame",
+            "-b:a", "${bitrateKbps}k",
+            output.absolutePath,
+        )
+        return try {
+            val process = ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start()
+            val finished = process.waitFor(10, TimeUnit.MINUTES)
+            if (!finished) {
+                process.destroyForcibly()
+                output.delete()
+                return "ffmpeg 转码超时"
+            }
+            val log = process.inputStream.bufferedReader().readText().trim()
+            if (process.exitValue() == 0 && output.isFile && output.length() > 0L) {
+                null
+            } else {
+                output.delete()
+                val reason = log.lineSequence().lastOrNull()?.takeIf { it.isNotBlank() }
+                if (reason == null) "ffmpeg 转码失败" else "ffmpeg 转码失败：$reason"
+            }
+        } catch (e: Exception) {
+            output.delete()
+            "启动 ffmpeg 失败：${e.message ?: e.toString()}"
+        }
+    }
+
+    /** 查找 ffmpeg：优先环境变量 FFMPEG_BIN，其次 PATH，最后常见安装路径。 */
+    fun locateFfmpeg(): String? {
+        System.getenv("FFMPEG_BIN")?.takeIf { File(it).canExecute() }?.let { return it }
+        val pathDirs = System.getenv("PATH").orEmpty().split(File.pathSeparator)
+        for (dir in pathDirs) {
+            val candidate = File(dir, if (isWindows()) "ffmpeg.exe" else "ffmpeg")
+            if (candidate.canExecute()) return candidate.absolutePath
+        }
+        if (isMac()) {
+            for (path in listOf("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg")) {
+                if (File(path).canExecute()) return path
+            }
+        }
+        return null
+    }
+
+    private fun isWindows(): Boolean =
+        System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+
+    private fun isMac(): Boolean =
+        System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
+}

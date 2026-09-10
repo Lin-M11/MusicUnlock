@@ -3,8 +3,10 @@ package musicunlock.service
 import musicunlock.core.Formats
 import musicunlock.core.MusicDecoder
 import musicunlock.core.MusicResult
+import musicunlock.settings.OutputFormat
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
 /**
@@ -16,7 +18,12 @@ object MusicConverter {
     /**
      * 转换单个加密音乐文件,成功返回 null,失败返回错误信息。
      */
-    fun convertWithError(inputPath: String, outputDir: String): String? {
+    fun convertWithError(
+        inputPath: String,
+        outputDir: String,
+        outputFormat: OutputFormat = OutputFormat.ORIGINAL,
+        bitrateKbps: Int = 320,
+    ): String? {
         return try {
             val input = File(inputPath)
             if (!input.isFile) return "不是有效的文件: $inputPath"
@@ -29,10 +36,37 @@ object MusicConverter {
             val data = Files.readAllBytes(input.toPath())
             val result = decoder.decode(data, input.name)
 
-            val outName = baseName(input.name) + "." + result.ext
-            val output = File(outputDir, outName)
-            File(outputDir).mkdirs()
-            Files.write(output.toPath(), result.data)
+            val outputDirectory = File(outputDir).apply { mkdirs() }
+            val outputExt = when (outputFormat) {
+                OutputFormat.ORIGINAL -> result.ext
+                OutputFormat.MP3 -> "mp3"
+            }
+            val outName = baseName(input.name) + "." + outputExt
+            val output = File(outputDirectory, outName)
+            val decoded = File.createTempFile("musicunlock-", ".${result.ext}", outputDirectory)
+            var transcoded: File? = null
+
+            try {
+                Files.write(decoded.toPath(), result.data)
+                val source = when (outputFormat) {
+                    OutputFormat.ORIGINAL -> decoded
+                    OutputFormat.MP3 -> {
+                        val target = File.createTempFile("musicunlock-", ".mp3", outputDirectory)
+                        transcoded = target
+                        val error = AudioTranscoder.toMp3(decoded, target, bitrateKbps)
+                        if (error != null) return error
+                        target
+                    }
+                }
+                Files.move(
+                    source.toPath(),
+                    output.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } finally {
+                decoded.delete()
+                transcoded?.delete()
+            }
 
             if (result.musicName != null || result.artist != null || result.album != null || result.cover != null) {
                 TagWriter.embed(output, result)

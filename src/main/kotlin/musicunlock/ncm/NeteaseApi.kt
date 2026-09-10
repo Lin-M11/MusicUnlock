@@ -184,6 +184,9 @@ object NeteaseApi {
         return account() ?: throw IllegalStateException("Cookie 无效或已过期，请重新登录后复制")
     }
 
+    /** 恢复上次保存的登录 Cookie；失效时抛出异常。 */
+    fun restoreSession(cookieHeader: String): NeteaseAccount = loginWithCookie(cookieHeader)
+
     /** 使用手机号 + 短信验证码登录，成功后返回账号信息。 */
     fun loginWithSms(phone: String, captcha: String): NeteaseAccount {
         val raw = postWeapi(
@@ -311,6 +314,16 @@ object NeteaseApi {
         } catch (e: Exception) {
             null
         }
+    }
+
+    /** 导出当前登录 Cookie，供配置文件保存。 */
+    fun exportSessionCookie(): String? {
+        val cookies = cookieManager.cookieStore
+            .get(URI.create(BASE))
+            .filter { !it.hasExpired() && it.name.isNotBlank() && it.value.isNotBlank() }
+            .distinctBy { it.name }
+        if (cookies.isEmpty()) return null
+        return cookies.joinToString("; ") { "${it.name}=${it.value}" }
     }
 
     /** 退出登录：清空会话内 Cookie。 */
