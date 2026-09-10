@@ -11,6 +11,28 @@ version = "1.1.0"
 
 
 
+// 版本号唯一来源：本文件的 version。生成 BuildInfo.kt 供运行时比较（启动检查更新）。
+val generateBuildInfo by tasks.registering {
+    val versionValue = version.toString()
+    val outputDir = layout.buildDirectory.dir("generated/buildinfo")
+    inputs.property("version", versionValue)
+    outputs.dir(outputDir)
+    doLast {
+        val file = outputDir.get().asFile.resolve("musicunlock/BuildInfo.kt")
+        file.parentFile.mkdirs()
+        file.writeText(
+            buildString {
+                appendLine("package musicunlock")
+                appendLine()
+                appendLine("/** 构建信息，由 Gradle 从 build.gradle.kts 的 version 生成。 */")
+                appendLine("object BuildInfo {")
+                appendLine("    const val VERSION: String = \"$versionValue\"")
+                appendLine("}")
+            },
+        )
+    }
+}
+
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
@@ -27,6 +49,7 @@ dependencies {
 
 kotlin {
     jvmToolchain(17)
+    sourceSets.getByName("main").kotlin.srcDir(generateBuildInfo)
 }
 
 tasks.test {
