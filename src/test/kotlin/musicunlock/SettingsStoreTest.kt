@@ -1,6 +1,7 @@
 package musicunlock
 
 import musicunlock.settings.AppSettings
+import musicunlock.settings.AccountSnapshot
 import musicunlock.settings.OutputFormat
 import musicunlock.settings.SettingsRepository
 import musicunlock.settings.defaultSettingsFile
@@ -37,6 +38,8 @@ class SettingsStoreTest {
                     windowHeight = 820,
                     neteaseCookie = "MUSIC_U=netease",
                     qqCookie = "uin=123; qqmusic_key=key",
+                    neteaseAccount = AccountSnapshot("网易用户", "https://example.com/netease.png", "1"),
+                    qqAccount = AccountSnapshot("QQ 用户", "https://example.com/qq.png", "123"),
                 )
             }
 
@@ -49,6 +52,8 @@ class SettingsStoreTest {
             assertEquals(820, reloaded.windowHeight)
             assertEquals("MUSIC_U=netease", reloaded.neteaseCookie)
             assertEquals("uin=123; qqmusic_key=key", reloaded.qqCookie)
+            assertEquals(AccountSnapshot("网易用户", "https://example.com/netease.png", "1"), reloaded.neteaseAccount)
+            assertEquals(AccountSnapshot("QQ 用户", "https://example.com/qq.png", "123"), reloaded.qqAccount)
         } finally {
             dir.deleteRecursively()
         }
@@ -61,13 +66,19 @@ class SettingsStoreTest {
         try {
             val repository = SettingsRepository(file)
             repository.update {
-                it.copy(dedup = true, outputFormat = OutputFormat.MP3, neteaseCookie = "cookie")
+                it.copy(
+                    dedup = true,
+                    outputFormat = OutputFormat.MP3,
+                    neteaseCookie = "cookie",
+                    neteaseAccount = AccountSnapshot("网易用户", null, "1"),
+                )
             }
 
             val defaults = repository.reset()
             assertEquals(AppSettings(), defaults)
             assertFalse(defaults.dedup)
             assertNull(defaults.neteaseCookie)
+            assertNull(defaults.neteaseAccount)
             assertEquals(AppSettings(), SettingsRepository(file).load())
         } finally {
             dir.deleteRecursively()
@@ -81,6 +92,25 @@ class SettingsStoreTest {
         try {
             file.writeText("not-json")
             assertEquals(AppSettings(), SettingsRepository(file).load())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `旧配置缺少账号快照时仍可读取`() {
+        val dir = Files.createTempDirectory("musicunlock-settings").toFile()
+        val file = dir.resolve("config")
+        try {
+            file.writeText(
+                """{"outputDir":"/tmp/music","dedup":true,"neteaseCookie":"MUSIC_U=old"}""",
+            )
+            val loaded = SettingsRepository(file).load()
+            assertEquals("/tmp/music", loaded.outputDir)
+            assertEquals(true, loaded.dedup)
+            assertEquals("MUSIC_U=old", loaded.neteaseCookie)
+            assertNull(loaded.neteaseAccount)
+            assertNull(loaded.qqAccount)
         } finally {
             dir.deleteRecursively()
         }

@@ -13,6 +13,13 @@ val outputBitrates: List<Int> = listOf(128, 192, 320)
 /** 接收一次纯设置变更，由调用方在最新配置上应用。 */
 typealias SettingsUpdate = ((AppSettings) -> AppSettings) -> Unit
 
+/** 可持久化的账号资料，用于登录态恢复时立即展示昵称与头像。 */
+data class AccountSnapshot(
+    val nickname: String,
+    val avatarUrl: String?,
+    val userId: String,
+)
+
 /** 应用级设置。字段带默认值，便于旧配置缺项时平滑读取。 */
 data class AppSettings(
     val outputDir: String = defaultOutputDir(),
@@ -23,6 +30,8 @@ data class AppSettings(
     val windowHeight: Int = 760,
     val neteaseCookie: String? = null,
     val qqCookie: String? = null,
+    val neteaseAccount: AccountSnapshot? = null,
+    val qqAccount: AccountSnapshot? = null,
 )
 
 /** 默认输出目录：优先使用用户主目录下的 Music/MusicUnlock。 */

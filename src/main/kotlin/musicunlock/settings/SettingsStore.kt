@@ -76,6 +76,20 @@ class SettingsRepository internal constructor(
             windowHeight = source.windowHeight.coerceAtLeast(680),
             neteaseCookie = source.neteaseCookie?.trim()?.takeIf { it.isNotEmpty() },
             qqCookie = source.qqCookie?.trim()?.takeIf { it.isNotEmpty() },
+            neteaseAccount = normalizeAccount(source.neteaseAccount),
+            qqAccount = normalizeAccount(source.qqAccount),
+        )
+    }
+
+    private fun normalizeAccount(account: AccountSnapshot?): AccountSnapshot? {
+        val source = account ?: return null
+        val nickname = source.nickname.trim()
+        val userId = source.userId.trim()
+        if (nickname.isEmpty() || userId.isEmpty()) return null
+        return source.copy(
+            nickname = nickname,
+            avatarUrl = source.avatarUrl?.trim()?.takeIf { it.isNotEmpty() },
+            userId = userId,
         )
     }
 

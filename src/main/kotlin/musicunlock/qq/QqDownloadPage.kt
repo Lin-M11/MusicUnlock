@@ -67,6 +67,7 @@ import musicunlock.ui.LoginMethodTab
 import musicunlock.ui.QrLoginPanel
 import musicunlock.ui.cleanTokens
 import musicunlock.ui.FileDialogs
+import musicunlock.settings.AccountSnapshot
 import musicunlock.settings.AppSettings
 import musicunlock.settings.SettingsUpdate
 import java.io.ByteArrayInputStream
@@ -83,7 +84,10 @@ fun QqDownloadPage(
     val scope = rememberCoroutineScope()
     val t = cleanTokens()
 
-    var account by remember { mutableStateOf<QqAccount?>(null) }
+    val savedAccount = settings.qqAccount
+        ?.takeIf { !settings.qqCookie.isNullOrBlank() }
+        ?.toQqAccount()
+    var account by remember { mutableStateOf(savedAccount) }
     var qrImage by remember { mutableStateOf<ImageBitmap?>(null) }
     var loginStatus by remember { mutableStateOf("") }
     var expired by remember { mutableStateOf(false) }
@@ -91,7 +95,7 @@ fun QqDownloadPage(
 
     var playlists by remember { mutableStateOf<List<QqPlaylist>>(emptyList()) }
     val selected = remember { mutableStateListOf<Long>() }
-    var loadingPlaylists by remember { mutableStateOf(false) }
+    var loadingPlaylists by remember { mutableStateOf(savedAccount != null) }
     var playlistError by remember { mutableStateOf<String?>(null) }
 
     val outputDir = settings.outputDir
@@ -104,8 +108,11 @@ fun QqDownloadPage(
     // 登录成功：写入账号并加载歌单
     val onLoggedIn: (QqAccount) -> Unit = { acc ->
         val cookie = QqMusicApi.exportSessionCookie()
-        if (!cookie.isNullOrBlank()) {
-            onUpdateSettings { it.copy(qqCookie = cookie) }
+        onUpdateSettings {
+            it.copy(
+                qqCookie = cookie ?: it.qqCookie,
+                qqAccount = acc.toSnapshot(),
+            )
         }
         account = acc
         loginStatus = "登录成功"
@@ -154,8 +161,13 @@ fun QqDownloadPage(
             runCatching { QqMusicApi.restoreSession(saved) }
         }
         result.onSuccess(onLoggedIn).onFailure {
-            loginStatus = "登录状态恢复失败，可重新登录"
-            fetchQr()
+            if (account == null) {
+                loginStatus = "登录状态恢复失败，可重新登录"
+                fetchQr()
+            } else {
+                playlistError = "登录状态恢复失败，可退出后重新登录"
+                loadingPlaylists = false
+            }
         }
     }
 
@@ -237,7 +249,7 @@ fun QqDownloadPage(
                         progress = 0f
                         doneCount = 0
                         failCount = 0
-                        onUpdateSettings { it.copy(qqCookie = null) }
+                        onUpdateSettings { it.copy(qqCookie = null, qqAccount = null) }
                         fetchQr()
                     }
                 },
@@ -295,6 +307,18 @@ fun QqDownloadPage(
         }
     }
 }
+
+private fun QqAccount.toSnapshot(): AccountSnapshot = AccountSnapshot(
+    nickname = nickname,
+    avatarUrl = avatarUrl,
+    userId = musicid,
+)
+
+private fun AccountSnapshot.toQqAccount(): QqAccount = QqAccount(
+    nickname = nickname,
+    avatarUrl = avatarUrl,
+    musicid = userId,
+)
 
 // ============================================================
 //  登录卡片

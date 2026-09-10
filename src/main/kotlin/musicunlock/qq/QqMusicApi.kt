@@ -653,6 +653,9 @@ object QqMusicApi {
         credential = null
         qrsig = null
         qrLoginUrl = null
+        profileLoaded = false
+        encryptUinCache = null
+        favoriteCountCache = null
     }
 
     /** 调用 musicu.fcg；自动带登录凭证 Cookie 与 comm 字段。 */

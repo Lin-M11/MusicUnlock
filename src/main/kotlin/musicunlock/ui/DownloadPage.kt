@@ -78,6 +78,7 @@ import musicunlock.ncm.NeteaseApi
 import musicunlock.ncm.NeteasePlaylist
 import musicunlock.ncm.QrLoginState
 import musicunlock.ncm.TaskboardClient
+import musicunlock.settings.AccountSnapshot
 import musicunlock.settings.AppSettings
 import musicunlock.settings.SettingsUpdate
 import java.awt.image.BufferedImage
@@ -99,7 +100,10 @@ fun DownloadPage(
     val scope = rememberCoroutineScope()
     val t = cleanTokens()
 
-    var account by remember { mutableStateOf<NeteaseAccount?>(null) }
+    val savedAccount = settings.neteaseAccount
+        ?.takeIf { !settings.neteaseCookie.isNullOrBlank() }
+        ?.toNeteaseAccount()
+    var account by remember { mutableStateOf(savedAccount) }
     var qrKey by remember { mutableStateOf<String?>(null) }
     var qrImage by remember { mutableStateOf<ImageBitmap?>(null) }
     var loginStatus by remember { mutableStateOf("") }
@@ -108,7 +112,7 @@ fun DownloadPage(
 
     var playlists by remember { mutableStateOf<List<NeteasePlaylist>>(emptyList()) }
     val selected = remember { mutableStateListOf<Long>() }
-    var loadingPlaylists by remember { mutableStateOf(false) }
+    var loadingPlaylists by remember { mutableStateOf(savedAccount != null) }
     var playlistError by remember { mutableStateOf<String?>(null) }
 
     val outputDir = settings.outputDir
@@ -122,8 +126,11 @@ fun DownloadPage(
     // 登录成功：写入账号并加载歌单
     val onLoggedIn: (NeteaseAccount) -> Unit = { acc ->
         val cookie = NeteaseApi.exportSessionCookie()
-        if (!cookie.isNullOrBlank()) {
-            onUpdateSettings { it.copy(neteaseCookie = cookie) }
+        onUpdateSettings {
+            it.copy(
+                neteaseCookie = cookie ?: it.neteaseCookie,
+                neteaseAccount = acc.toSnapshot(),
+            )
         }
         account = acc
         loginStatus = "登录成功"
@@ -146,7 +153,12 @@ fun DownloadPage(
             result
                 .onSuccess(onLoggedIn)
                 .onFailure {
-                    loginStatus = "登录状态恢复失败，可重新登录"
+                    if (account == null) {
+                        loginStatus = "登录状态恢复失败，可重新登录"
+                    } else {
+                        playlistError = "登录状态恢复失败，可退出后重新登录"
+                        loadingPlaylists = false
+                    }
                 }
         }
         restoreFinished = true
@@ -245,7 +257,7 @@ fun DownloadPage(
                         progress = 0f
                         doneCount = 0
                         failCount = 0
-                        onUpdateSettings { it.copy(neteaseCookie = null) }
+                        onUpdateSettings { it.copy(neteaseCookie = null, neteaseAccount = null) }
                     }
                 },
             )
@@ -317,6 +329,17 @@ fun DownloadPage(
             }
         }
     }
+}
+
+private fun NeteaseAccount.toSnapshot(): AccountSnapshot = AccountSnapshot(
+    nickname = nickname,
+    avatarUrl = avatarUrl,
+    userId = userId.toString(),
+)
+
+private fun AccountSnapshot.toNeteaseAccount(): NeteaseAccount? {
+    val id = userId.toLongOrNull() ?: return null
+    return NeteaseAccount(nickname = nickname, avatarUrl = avatarUrl, userId = id)
 }
 
 // ============================================================
