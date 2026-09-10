@@ -8,9 +8,9 @@
  * 非反色。
  * STORY: 用户把加密音乐拖进来,立刻看清每个文件的格式、状态与去向,一次点击完成转换,
  * 元数据与封面原样保留;无需理解任何格式细节。
- * FIRST VIEWPORT: 顶部品牌行(橙渐变 logo 徽记 + 摘要胶囊 + 主题切换) -> 左侧
- * 虚线拖拽区 + 转换队列卡片 -> 右侧 300dp 控制栏(输出目录 / 去重 / 进度 / 打开) ->
- * 底部状态与主转换按钮。
+ * FIRST VIEWPORT: 左侧 228dp 工作区导航(品牌 / 本地工具 / 音乐服务 / 队列状态 / 工具)
+ * -> 主内容区标题与摘要 -> 虚线拖拽区 + 转换队列卡片 -> 右侧 300dp 控制栏
+ * (输出目录 / 去重 / 进度 / 打开) -> 底部状态与主转换按钮。
  * FORM: 通用浅色·精密工具;方向轮次见 .impeccable/mocks/decision/general-clean.png。
  * FINISH: unreviewed and undocumented is unfinished; this build ends with the finish
  * review, the verdict, DESIGN.md, and every shipping raster carrying its provenance.
@@ -22,6 +22,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,11 +47,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.NewReleases
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -58,7 +68,9 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,20 +100,35 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.singleWindowApplication
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import musicunlock.AppLinks
+import musicunlock.BuildInfo
 import musicunlock.core.Formats
+import musicunlock.ncm.NeteaseApi
 import musicunlock.qq.QqDownloadPage
+import musicunlock.qq.QqMusicApi
 import musicunlock.service.MusicConverter
+import musicunlock.settings.AppSettings
+import musicunlock.settings.OutputFormat
+import musicunlock.settings.SettingsStore
+import musicunlock.settings.SettingsUpdate
+import musicunlock.settings.outputBitrates
+import musicunlock.update.ReleaseInfo
+import musicunlock.update.UpdateChecker
 import java.awt.Desktop
+import java.awt.Dimension
 import java.awt.datatransfer.DataFlavor
 import java.awt.dnd.DropTargetDropEvent
 import java.io.File
+import java.net.URI
 import java.util.Locale
 import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
@@ -119,257 +146,820 @@ class FileItem(val path: String, val name: String) {
 // ============================================================
 
 @Composable
-fun MusicUnlockApp() {
+fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
+    var settings by remember { mutableStateOf(SettingsStore.load()) }
     var dark by remember { mutableStateOf(false) }
+    var aboutOpen by remember { mutableStateOf(false) }
+    var resetOpen by remember { mutableStateOf(false) }
+    var sessionRevision by remember { mutableStateOf(0) }
+    val updateSettings: SettingsUpdate = { transform -> settings = SettingsStore.update(transform) }
     MusicUnlockTheme(darkTheme = dark) {
-        MainScreen(dark = dark, onToggleDark = { dark = !dark })
+        Box(Modifier.fillMaxSize()) {
+            MainScreen(
+                dark = dark,
+                onToggleDark = { dark = !dark },
+                onShowAbout = { aboutOpen = true },
+                onShowReset = { resetOpen = true },
+                settings = settings,
+                onUpdateSettings = updateSettings,
+                sessionRevision = sessionRevision,
+            )
+            if (aboutOpen) AboutOverlay(onClose = { aboutOpen = false })
+            if (resetOpen) {
+                ResetSettingsOverlay(
+                    onClose = { resetOpen = false },
+                    onConfirm = {
+                        NeteaseApi.logout()
+                        QqMusicApi.logout()
+                        settings = SettingsStore.reset()
+                        sessionRevision++
+                        onResetWindowSize()
+                        resetOpen = false
+                    },
+                )
+            }
+        }
     }
 }
 
 fun showWindow() {
+    val initialSettings = SettingsStore.load()
+    val windowState = WindowState(
+        width = initialSettings.windowWidth.dp,
+        height = initialSettings.windowHeight.dp,
+    )
     singleWindowApplication(
         title = "MusicUnlock",
-        state = WindowState(width = 1120.dp, height = 760.dp),
+        state = windowState,
     ) {
-        MusicUnlockApp()
+        LaunchedEffect(Unit) {
+            window.minimumSize = Dimension(980, 680)
+        }
+        LaunchedEffect(windowState.size) {
+            delay(500)
+            SettingsStore.update {
+                it.copy(
+                    windowWidth = windowState.size.width.value.toInt(),
+                    windowHeight = windowState.size.height.value.toInt(),
+                )
+            }
+        }
+        MusicUnlockApp(
+            onResetWindowSize = {
+                window.extendedState = java.awt.Frame.NORMAL
+                windowState.size = DpSize(1120.dp, 760.dp)
+            },
+        )
     }
 }
 
 @Composable
-fun MainScreen(dark: Boolean, onToggleDark: () -> Unit) {
+fun MainScreen(
+    dark: Boolean,
+    onToggleDark: () -> Unit,
+    onShowAbout: () -> Unit,
+    onShowReset: () -> Unit,
+    settings: AppSettings,
+    onUpdateSettings: SettingsUpdate,
+    sessionRevision: Int,
+) {
     val scope = rememberCoroutineScope()
     val files = remember { mutableStateListOf<FileItem>() }
-    var outputDir by remember { mutableStateOf(defaultOutputDir()) }
-    var dedup by remember { mutableStateOf(false) }
     var converting by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
     var doneCount by remember { mutableStateOf(0) }
     var failCount by remember { mutableStateOf(0) }
     var page by remember { mutableStateOf(0) }
+    var update by remember { mutableStateOf<ReleaseInfo?>(null) }
+
+    // 启动时检查一次 GitHub Releases；失败静默，不阻塞界面
+    LaunchedEffect(Unit) {
+        update = withContext(Dispatchers.IO) { UpdateChecker.check(BuildInfo.VERSION) }
+    }
 
     val t = cleanTokens()
     val totalBytes = files.sumOf { File(it.path).length() }
     val convertingCount = files.count { it.status == FileStatus.CONVERTING }
     val pendingCount = files.count { it.status == FileStatus.PENDING }
 
-    Column(
-        modifier = Modifier.fillMaxSize().background(t.bg).padding(horizontal = 26.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        // ---- 顶部:品牌 + 摘要 + 主题 ----
-        HeaderRow(
+    Row(Modifier.fillMaxSize().background(t.bg)) {
+        AppSidebar(
+            page = page,
+            onSelect = { page = it },
             dark = dark,
             onToggleDark = onToggleDark,
-            formatCount = Formats.supportedExtensions().size,
-            totalSize = humanSize(totalBytes),
+            onShowAbout = onShowAbout,
+            onShowReset = onShowReset,
             totalCount = files.size,
+            totalSize = humanSize(totalBytes),
+            convertingCount = convertingCount,
         )
+        Box(Modifier.width(1.dp).fillMaxHeight().background(t.border))
 
-        // ---- 页签:格式转换 / 网易云下载 / QQ 音乐下载 ----
-        PageTabs(page = page, onSelect = { page = it })
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .padding(horizontal = 22.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            WorkspaceHeader(
+                page = page,
+                formatCount = Formats.supportedExtensions().size,
+                totalSize = humanSize(totalBytes),
+                totalCount = files.size,
+            )
 
-        if (page == 0) {
-            // ---- 主体:左列(拖拽 + 队列) + 右侧栏 ----
-            Row(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    DropZone(
-                        files = files,
-                        onAddFiles = {
-                            val selected = FileDialogs.pickFiles("选择加密音乐文件", Formats.supportedExtensions())
-                            addPaths(files, selected.map { it.absolutePath })
-                        },
-                        onAddFolder = {
-                            FileDialogs.pickFolder("选择文件夹")?.let { addPaths(files, listOf(it.absolutePath)) }
-                        },
-                    )
-                    QueueCard(
-                        files = files,
-                        converting = converting,
-                        onRemove = { index -> if (!converting) files.removeAt(index) },
-                    )
-                }
-
-                Rail(
-                    outputDir = outputDir,
-                    onOutputDirChange = { outputDir = it },
-                    dedup = dedup,
-                    onDedupChange = { dedup = it },
-                    converting = converting,
-                    progress = progress,
-                    doneCount = doneCount,
-                    failCount = failCount,
-                    totalCount = files.size,
+            // ---- 新版本提示(有更新时出现,可忽略) ----
+            update?.let { release ->
+                UpdateBanner(
+                    release = release,
+                    current = BuildInfo.VERSION,
+                    onDismiss = { update = null },
                 )
             }
 
-            // ---- 底部:状态 + 开始转换 ----
-            Footer(
-                converting = converting,
-                convertingCount = convertingCount,
-                pendingCount = pendingCount,
-                enabled = !converting && files.isNotEmpty(),
-                onConvert = {
-                    if (files.isEmpty()) return@Footer
-                    converting = true
-                    doneCount = 0
-                    failCount = 0
-                    progress = 0f
-                    val targets = if (dedup) dedupFiles(files) else files.toList()
-                    val output = outputDir
-                    scope.launch {
-                        val total = targets.size
-                        var processed = 0
-                        targets.forEachIndexed { idx, item ->
-                            item.status = FileStatus.CONVERTING
-                            val ok = withContext(Dispatchers.IO) {
-                                val error = MusicConverter.convertWithError(item.path, output)
-                                if (error == null) {
-                                    true
-                                } else {
-                                    item.message = error
-                                    false
-                                }
-                            }
-                            item.status = if (ok) FileStatus.DONE else FileStatus.FAILED
-                            if (ok) doneCount++ else failCount++
-                            processed++
-                            progress = processed.toFloat() / total
-                        }
-                        converting = false
+            if (page == 0) {
+                // ---- 主体:左列(拖拽 + 队列) + 右侧栏 ----
+                Row(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        DropZone(
+                            files = files,
+                            onAddFiles = {
+                                val selected = FileDialogs.pickFiles("选择加密音乐文件", Formats.supportedExtensions())
+                                addPaths(files, selected.map { it.absolutePath })
+                            },
+                            onAddFolder = {
+                                FileDialogs.pickFolder("选择文件夹")?.let { addPaths(files, listOf(it.absolutePath)) }
+                            },
+                        )
+                        QueueCard(
+                            files = files,
+                            converting = converting,
+                            onRemove = { index -> if (!converting) files.removeAt(index) },
+                        )
                     }
-                },
-            )
-        } else if (page == 1) {
-            DownloadPage(modifier = Modifier.weight(1f).fillMaxWidth())
-        } else {
-            QqDownloadPage(modifier = Modifier.weight(1f).fillMaxWidth())
+
+                    Rail(
+                        outputDir = settings.outputDir,
+                        onOutputDirChange = { value -> onUpdateSettings { it.copy(outputDir = value) } },
+                        dedup = settings.dedup,
+                        onDedupChange = { value -> onUpdateSettings { it.copy(dedup = value) } },
+                        outputFormat = settings.outputFormat,
+                        onOutputFormatChange = { value -> onUpdateSettings { it.copy(outputFormat = value) } },
+                        bitrateKbps = settings.bitrateKbps,
+                        onBitrateChange = { value -> onUpdateSettings { it.copy(bitrateKbps = value) } },
+                        converting = converting,
+                        progress = progress,
+                        doneCount = doneCount,
+                        failCount = failCount,
+                        totalCount = files.size,
+                    )
+                }
+
+                // ---- 底部:状态 + 开始转换 ----
+                Footer(
+                    converting = converting,
+                    convertingCount = convertingCount,
+                    pendingCount = pendingCount,
+                    enabled = !converting && files.isNotEmpty(),
+                    onConvert = {
+                        if (files.isEmpty()) return@Footer
+                        converting = true
+                        doneCount = 0
+                        failCount = 0
+                        progress = 0f
+                        val targets = if (settings.dedup) dedupFiles(files) else files.toList()
+                        val output = settings.outputDir
+                        val outputFormat = settings.outputFormat
+                        val bitrateKbps = settings.bitrateKbps
+                        scope.launch {
+                            val total = targets.size
+                            var processed = 0
+                            targets.forEachIndexed { idx, item ->
+                                item.status = FileStatus.CONVERTING
+                                val ok = withContext(Dispatchers.IO) {
+                                    val error = MusicConverter.convertWithError(
+                                        item.path,
+                                        output,
+                                        outputFormat,
+                                        bitrateKbps,
+                                    )
+                                    if (error == null) {
+                                        true
+                                    } else {
+                                        item.message = error
+                                        false
+                                    }
+                                }
+                                item.status = if (ok) FileStatus.DONE else FileStatus.FAILED
+                                if (ok) doneCount++ else failCount++
+                                processed++
+                                progress = processed.toFloat() / total
+                            }
+                            converting = false
+                        }
+                    },
+                )
+            } else if (page == 1) {
+                key(sessionRevision) {
+                    DownloadPage(
+                        settings = settings,
+                        onUpdateSettings = onUpdateSettings,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
+                }
+            } else {
+                key(sessionRevision) {
+                    QqDownloadPage(
+                        settings = settings,
+                        onUpdateSettings = onUpdateSettings,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
+                }
+            }
         }
     }
 }
 
-// ============================================================
-//  页签
-// ============================================================
-
 @Composable
-private fun PageTabs(page: Int, onSelect: (Int) -> Unit) {
-    val t = cleanTokens()
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(t.surface)
-            .border(1.dp, t.border, RoundedCornerShape(12.dp))
-            .padding(4.dp),
-    ) {
-        TabItem(modifier = Modifier.weight(1f), label = "格式转换", selected = page == 0) { onSelect(0) }
-        TabItem(modifier = Modifier.weight(1f), label = "网易云下载", selected = page == 1) { onSelect(1) }
-        TabItem(modifier = Modifier.weight(1f), label = "QQ 音乐下载", selected = page == 2) { onSelect(2) }
-    }
-}
-
-@Composable
-private fun TabItem(modifier: Modifier, label: String, selected: Boolean, onClick: () -> Unit) {
-    val t = cleanTokens()
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(9.dp))
-            .background(if (selected) t.primarySoft else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(vertical = 9.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            fontSize = 13.5.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) t.primary else t.textSecondary,
-        )
-    }
-}
-
-// ============================================================
-//  顶部
-// ============================================================
-
-@Composable
-private fun HeaderRow(
-    dark: Boolean,
-    onToggleDark: () -> Unit,
+private fun WorkspaceHeader(
+    page: Int,
     formatCount: Int,
     totalSize: String,
     totalCount: Int,
 ) {
     val t = cleanTokens()
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        // Logo mark:橙渐变圆角方块 + ♪ 音符字形 + 顶部内高光(与设计稿一致)
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .shadow(6.dp, RoundedCornerShape(14.dp), spotColor = t.primary.copy(alpha = 0.28f), ambientColor = t.primary.copy(alpha = 0.20f))
-                .clip(RoundedCornerShape(14.dp))
-                .background(Brush.linearGradient(listOf(Color(0xFFFF8A3D), t.primary)))
-                .drawBehind {
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(Color.White.copy(alpha = 0.30f), Color.Transparent),
-                            startY = 0f,
-                            endY = size.height * 0.45f,
-                        ),
-                    )
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                "♪",
-                fontSize = 27.sp,
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-        Spacer(Modifier.width(14.dp))
+    val (title, subtitle) = when (page) {
+        0 -> "格式转换" to "拖入加密音乐，保留标签与封面输出标准音频"
+        1 -> "网易云下载" to "登录后选择歌单，下载歌曲"
+        else -> "QQ 音乐下载" to "登录后选择歌单，下载歌曲"
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth().height(50.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Column {
             Text(
-                "MusicUnlock",
-                fontSize = 22.sp,
+                title,
+                fontSize = 20.sp,
+                lineHeight = 24.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = (-0.2).sp,
                 color = t.text,
             )
             Text(
-                "多平台加密音乐格式转换",
+                subtitle,
                 fontSize = 12.5.sp,
+                lineHeight = 17.sp,
                 color = t.textSecondary,
             )
         }
+        if (page == 0) {
+            Spacer(Modifier.weight(1f))
+            Pill(text = "支持 $formatCount 种格式", emphasize = false)
+            Spacer(Modifier.width(10.dp))
+            Pill(
+                text = if (totalCount > 0) "待处理 $totalSize" else "暂无文件",
+                emphasize = true,
+            )
+        }
+    }
+}
+
+// ============================================================
+//  左侧工作区导航
+// ============================================================
+
+@Composable
+private fun AppSidebar(
+    page: Int,
+    onSelect: (Int) -> Unit,
+    dark: Boolean,
+    onToggleDark: () -> Unit,
+    onShowAbout: () -> Unit,
+    onShowReset: () -> Unit,
+    totalCount: Int,
+    totalSize: String,
+    convertingCount: Int,
+) {
+    val t = cleanTokens()
+    Column(
+        modifier = Modifier
+            .width(228.dp)
+            .fillMaxHeight()
+            .background(t.surface)
+            .padding(vertical = 18.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            LogoMark(40.dp)
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(
+                    "MusicUnlock",
+                    fontSize = 17.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.15).sp,
+                    color = t.text,
+                )
+                Text(
+                    "本地转换 · 在线下载",
+                    fontSize = 11.5.sp,
+                    lineHeight = 15.sp,
+                    color = t.textSecondary,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(28.dp))
+        SidebarSectionLabel("本地工具")
+        Spacer(Modifier.height(8.dp))
+        SidebarNavItem(
+            icon = Icons.Outlined.AudioFile,
+            title = "格式转换",
+            detail = "本地文件",
+            selected = page == 0,
+            onClick = { onSelect(0) },
+        )
+
+        Spacer(Modifier.height(20.dp))
+        SidebarSectionLabel("音乐服务")
+        Spacer(Modifier.height(8.dp))
+        SidebarNavItem(
+            icon = Icons.Outlined.LibraryMusic,
+            title = "网易云下载",
+            detail = "扫码或浏览器",
+            selected = page == 1,
+            onClick = { onSelect(1) },
+        )
+        SidebarNavItem(
+            icon = Icons.Outlined.MusicNote,
+            title = "QQ 音乐下载",
+            detail = "扫码或 Cookie",
+            selected = page == 2,
+            onClick = { onSelect(2) },
+        )
+
         Spacer(Modifier.weight(1f))
-        Pill(text = "支持 $formatCount 种格式", emphasize = false)
-        Spacer(Modifier.width(10.dp))
-        Pill(text = if (totalCount > 0) "待处理 $totalSize" else "暂无文件", emphasize = true)
-        Spacer(Modifier.width(10.dp))
-        // 主题切换
+        SidebarQueueSummary(
+            totalCount = totalCount,
+            totalSize = totalSize,
+            convertingCount = convertingCount,
+            onClick = { onSelect(0) },
+        )
+        HorizontalDivider(color = t.border)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SidebarUtilityButton(
+                icon = Icons.Outlined.Info,
+                label = "关于",
+                onClick = onShowAbout,
+            )
+            Spacer(Modifier.weight(1f))
+            SidebarUtilityButton(
+                icon = if (dark) Icons.Filled.LightMode else Icons.Outlined.DarkMode,
+                label = if (dark) "浅色" else "深色",
+                onClick = onToggleDark,
+            )
+        }
+        Box(Modifier.fillMaxWidth().padding(horizontal = 21.dp)) {
+            SidebarUtilityButton(
+                icon = Icons.Outlined.Refresh,
+                label = "恢复默认设置",
+                onClick = onShowReset,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SidebarSectionLabel(text: String) {
+    val t = cleanTokens()
+    Text(
+        text,
+        modifier = Modifier.padding(horizontal = 18.dp),
+        fontSize = 10.5.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 0.7.sp,
+        color = t.textMuted,
+    )
+}
+
+@Composable
+private fun SidebarNavItem(
+    icon: ImageVector,
+    title: String,
+    detail: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val t = cleanTokens()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val background = when {
+        selected -> t.primarySoft
+        hovered -> t.surfaceSoft
+        else -> Color.Transparent
+    }
+
+    Row(
+        modifier = Modifier
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .fillMaxWidth()
+            .height(54.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(background)
+            .hoverable(interaction)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Box(
             modifier = Modifier
-                .size(38.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(t.surface)
-                .border(1.dp, t.border, RoundedCornerShape(12.dp))
-                .clickable(onClick = onToggleDark),
+                .size(32.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(if (selected) t.surface else t.surfaceSoft),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                if (dark) Icons.Filled.LightMode else Icons.Outlined.DarkMode,
-                contentDescription = if (dark) "切换到浅色模式" else "切换到深色模式",
-                tint = t.textSecondary,
+                icon,
+                contentDescription = null,
+                tint = if (selected) t.primary else t.textSecondary,
                 modifier = Modifier.size(17.dp),
             )
         }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                fontSize = 13.5.sp,
+                lineHeight = 17.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                color = if (selected) t.primary else t.text,
+            )
+            Text(
+                detail,
+                fontSize = 11.5.sp,
+                lineHeight = 15.sp,
+                color = t.textMuted,
+            )
+        }
+        if (selected) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(t.primary),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SidebarQueueSummary(
+    totalCount: Int,
+    totalSize: String,
+    convertingCount: Int,
+    onClick: () -> Unit,
+) {
+    val t = cleanTokens()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Column(
+        modifier = Modifier
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (hovered) t.surfaceSoft else Color.Transparent)
+            .hoverable(interaction)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "转换队列",
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.7.sp,
+                color = t.textMuted,
+            )
+            Spacer(Modifier.weight(1f))
+            if (convertingCount > 0) {
+                Text(
+                    "$convertingCount 处理中",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = t.primary,
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (totalCount > 0) "$totalCount 首 · $totalSize" else "暂无待转换文件",
+            fontSize = 12.5.sp,
+            fontWeight = if (totalCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (totalCount > 0) t.text else t.textMuted,
+        )
+    }
+}
+
+@Composable
+private fun SidebarUtilityButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    val t = cleanTokens()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(if (hovered) t.surfaceSoft else Color.Transparent)
+            .hoverable(interaction)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = t.textSecondary,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(7.dp))
+        Text(
+            label,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = t.textSecondary,
+        )
+    }
+}
+
+/** 启动检查到新版本时的提示条：给出下载入口，可忽略，不阻塞任何操作。 */
+@Composable
+private fun UpdateBanner(release: ReleaseInfo, current: String, onDismiss: () -> Unit) {
+    val t = cleanTokens()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(t.primarySoft)
+            .border(1.dp, t.primary.copy(alpha = 0.32f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Outlined.NewReleases,
+            contentDescription = null,
+            tint = t.primary,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "发现新版本 ${release.version}",
+                fontSize = 13.5.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = t.text,
+            )
+            Text(
+                "当前版本 $current",
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                color = t.textSecondary,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(9.dp))
+                .background(t.primary)
+                .clickable { openInBrowser(release.pageUrl) }
+                .padding(horizontal = 13.dp, vertical = 7.dp),
+        ) {
+            Text("前往下载", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = t.onPrimary)
+        }
+        Spacer(Modifier.width(6.dp))
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(9.dp))
+                .clickable(onClick = onDismiss)
+                .padding(horizontal = 11.dp, vertical = 7.dp),
+        ) {
+            Text("忽略", fontSize = 12.5.sp, color = t.textSecondary)
+        }
+    }
+}
+
+/** 在系统浏览器中打开链接；浏览器不可用时静默跳过。 */
+private fun openInBrowser(url: String) {
+    runCatching { Desktop.getDesktop().browse(URI.create(url)) }
+}
+
+/** 关于卡片：版本信息、项目简介与 GitHub 项目页入口。 */
+@Composable
+private fun AboutOverlay(onClose: () -> Unit) {
+    val t = cleanTokens()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.38f))
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClose,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(400.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(t.surface)
+                .border(1.dp, t.border, RoundedCornerShape(18.dp))
+                // 卡片内部吞掉点击,避免穿透到遮罩
+                .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {}
+                .padding(horizontal = 26.dp, vertical = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            LogoMark(56.dp)
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "MusicUnlock",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = t.text,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "版本 ${BuildInfo.VERSION}",
+                fontSize = 12.5.sp,
+                color = t.textSecondary,
+            )
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "多平台加密音乐格式转换工具:网易云 / QQ 音乐 / 酷狗 / 酷我,解密后输出标准音频格式,保留标签与封面。",
+                fontSize = 12.5.sp,
+                lineHeight = 19.sp,
+                textAlign = TextAlign.Center,
+                color = t.textSecondary,
+            )
+            Spacer(Modifier.height(20.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(42.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(t.primary)
+                    .clickable { openInBrowser(AppLinks.PROJECT_PAGE) },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.OpenInNew,
+                    contentDescription = null,
+                    tint = t.onPrimary,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "GitHub 项目页",
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = t.onPrimary,
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(9.dp))
+                    .clickable(onClick = onClose)
+                    .padding(horizontal = 14.dp, vertical = 7.dp),
+            ) {
+                Text("关闭", fontSize = 12.5.sp, color = t.textSecondary)
+            }
+        }
+    }
+}
+
+/** 恢复默认确认卡片，避免误触清空设置与登录状态。 */
+@Composable
+private fun ResetSettingsOverlay(onClose: () -> Unit, onConfirm: () -> Unit) {
+    val t = cleanTokens()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.38f))
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClose,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(420.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(t.surface)
+                .border(1.dp, t.border, RoundedCornerShape(18.dp))
+                .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {}
+                .padding(horizontal = 26.dp, vertical = 24.dp),
+        ) {
+            Text(
+                "恢复默认设置",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = t.text,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "输出目录、去重、输出格式与码率、窗口大小和登录状态都会恢复为初始值。",
+                fontSize = 13.sp,
+                lineHeight = 20.sp,
+                color = t.textSecondary,
+            )
+            Spacer(Modifier.height(22.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(onClick = onClose)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                ) {
+                    Text("取消", fontSize = 13.sp, color = t.textSecondary)
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = onConfirm,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = t.primary,
+                        contentColor = t.onPrimary,
+                    ),
+                    modifier = Modifier.height(40.dp),
+                ) {
+                    Text("恢复默认", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+//  品牌与摘要
+// ============================================================
+
+/** 品牌徽记:橙渐变圆角方块 + ♪ 音符字形 + 顶部内高光(与设计稿一致)。 */
+@Composable
+private fun LogoMark(side: Dp) {
+    val t = cleanTokens()
+    val corner = side * 14f / 48f
+    Box(
+        modifier = Modifier
+            .size(side)
+            .shadow(6.dp, RoundedCornerShape(corner), spotColor = t.primary.copy(alpha = 0.28f), ambientColor = t.primary.copy(alpha = 0.20f))
+            .clip(RoundedCornerShape(corner))
+            .background(Brush.linearGradient(listOf(Color(0xFFFF8A3D), t.primary)))
+            .drawBehind {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color.White.copy(alpha = 0.30f), Color.Transparent),
+                        startY = 0f,
+                        endY = size.height * 0.45f,
+                    ),
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "♪",
+            fontSize = (side.value * 27f / 48f).sp,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 
@@ -683,6 +1273,10 @@ private fun Rail(
     onOutputDirChange: (String) -> Unit,
     dedup: Boolean,
     onDedupChange: (Boolean) -> Unit,
+    outputFormat: OutputFormat,
+    onOutputFormatChange: (OutputFormat) -> Unit,
+    bitrateKbps: Int,
+    onBitrateChange: (Int) -> Unit,
     converting: Boolean,
     progress: Float,
     doneCount: Int,
@@ -722,6 +1316,34 @@ private fun Rail(
                 color = t.text,
             )
         }
+        RailLabel("输出格式")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ChoiceChip(
+                text = "原始格式",
+                selected = outputFormat == OutputFormat.ORIGINAL,
+                enabled = !converting,
+                onClick = { onOutputFormatChange(OutputFormat.ORIGINAL) },
+            )
+            ChoiceChip(
+                text = "MP3",
+                selected = outputFormat == OutputFormat.MP3,
+                enabled = !converting,
+                onClick = { onOutputFormatChange(OutputFormat.MP3) },
+            )
+        }
+        if (outputFormat == OutputFormat.MP3) {
+            RailLabel("码率")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                outputBitrates.forEach { value ->
+                    ChoiceChip(
+                        text = "${value}k",
+                        selected = bitrateKbps == value,
+                        enabled = !converting,
+                        onClick = { onBitrateChange(value) },
+                    )
+                }
+            }
+        }
         RailLabel("进度")
         if (totalCount > 0) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -750,6 +1372,32 @@ private fun Rail(
                 color = t.textMuted,
             )
         }
+    }
+}
+
+@Composable
+private fun ChoiceChip(
+    text: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val t = cleanTokens()
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(if (selected) t.primarySoft else t.surfaceSoft)
+            .border(1.dp, if (selected) t.primary.copy(alpha = 0.5f) else t.border, RoundedCornerShape(9.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            fontSize = 12.5.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            color = if (!enabled) t.textMuted else if (selected) t.primary else t.textSecondary,
+        )
     }
 }
 
@@ -980,16 +1628,6 @@ private fun Modifier.dashedBorder(
 // ============================================================
 //  工具函数
 // ============================================================
-
-/** 默认输出目录:优先使用用户主目录下的 Music/MusicUnlock。 */
-private fun defaultOutputDir(): String {
-    val home = System.getProperty("user.home")
-    return if (!home.isNullOrBlank()) {
-        File(home, "Music/MusicUnlock").absolutePath
-    } else {
-        File("output").absolutePath
-    }
-}
 
 private fun humanSize(bytes: Long): String = when {
     bytes >= 1L shl 30 -> String.format(Locale.ROOT, "%.1f GB", bytes / (1L shl 30).toDouble())

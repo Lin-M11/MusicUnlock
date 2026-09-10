@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -27,16 +26,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Logout
-import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.Public
-import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
@@ -83,7 +78,8 @@ import musicunlock.ncm.NeteaseApi
 import musicunlock.ncm.NeteasePlaylist
 import musicunlock.ncm.QrLoginState
 import musicunlock.ncm.TaskboardClient
-import java.awt.Desktop
+import musicunlock.settings.AppSettings
+import musicunlock.settings.SettingsUpdate
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -93,12 +89,13 @@ import kotlin.coroutines.cancellation.CancellationException
 /** 当前进行的批量操作。 */
 private enum class BatchAction { NONE, DOWNLOAD, SUBMIT }
 
-/** 登录方式。 */
-private enum class LoginMode { QR, SMS, BROWSER }
-
 /** 网易云下载页：扫码登录 → 选择歌单 → 下载 MP3 / 提交下载任务到任务面板。 */
 @Composable
-fun DownloadPage(modifier: Modifier = Modifier) {
+fun DownloadPage(
+    settings: AppSettings,
+    onUpdateSettings: SettingsUpdate,
+    modifier: Modifier = Modifier,
+) {
     val scope = rememberCoroutineScope()
     val t = cleanTokens()
 
@@ -107,22 +104,27 @@ fun DownloadPage(modifier: Modifier = Modifier) {
     var qrImage by remember { mutableStateOf<ImageBitmap?>(null) }
     var loginStatus by remember { mutableStateOf("") }
     var expired by remember { mutableStateOf(false) }
-    var loginMode by remember { mutableStateOf(LoginMode.QR) }
+    var loginMode by remember { mutableStateOf(LoginMethod.QR) }
 
     var playlists by remember { mutableStateOf<List<NeteasePlaylist>>(emptyList()) }
     val selected = remember { mutableStateListOf<Long>() }
     var loadingPlaylists by remember { mutableStateOf(false) }
     var playlistError by remember { mutableStateOf<String?>(null) }
 
-    var outputDir by remember { mutableStateOf(downloadDefaultOutputDir()) }
+    val outputDir = settings.outputDir
     var busyAction by remember { mutableStateOf(BatchAction.NONE) }
     var progress by remember { mutableStateOf(0f) }
     var doneCount by remember { mutableStateOf(0) }
     var failCount by remember { mutableStateOf(0) }
+    var restoreFinished by remember { mutableStateOf(settings.neteaseCookie.isNullOrBlank()) }
     val logLines = remember { mutableStateListOf<String>() }
 
     // 登录成功：写入账号并加载歌单
     val onLoggedIn: (NeteaseAccount) -> Unit = { acc ->
+        val cookie = NeteaseApi.exportSessionCookie()
+        if (!cookie.isNullOrBlank()) {
+            onUpdateSettings { it.copy(neteaseCookie = cookie) }
+        }
         account = acc
         loginStatus = "登录成功"
         loadPlaylists(
@@ -131,6 +133,42 @@ fun DownloadPage(modifier: Modifier = Modifier) {
             setLoading = { loadingPlaylists = it },
             setError = { playlistError = it },
         )
+    }
+
+    // 启动时恢复上次登录；Cookie 失效则清空保存值
+    LaunchedEffect(Unit) {
+        val saved = settings.neteaseCookie
+        if (!saved.isNullOrBlank()) {
+            loginStatus = "正在恢复登录状态…"
+            val result = withContext(Dispatchers.IO) {
+                runCatching { NeteaseApi.restoreSession(saved) }
+            }
+            result
+                .onSuccess(onLoggedIn)
+                .onFailure {
+                    loginStatus = "登录状态恢复失败，可重新登录"
+                }
+        }
+        restoreFinished = true
+    }
+
+    val fetchQr: () -> Unit = {
+        scope.launch {
+            loginStatus = "正在获取二维码…"
+            expired = false
+            qrImage = null
+            qrKey = withContext(Dispatchers.IO) {
+                runCatching { NeteaseApi.qrKey() }.getOrElse {
+                    loginStatus = "获取二维码失败：${it.message}"
+                    null
+                }
+            }
+        }
+    }
+
+    // 进入登录页或退出登录后自动获取二维码。
+    LaunchedEffect(account, restoreFinished) {
+        if (restoreFinished && account == null && qrKey == null) fetchQr()
     }
 
     // 生成二维码
@@ -190,19 +228,7 @@ fun DownloadPage(modifier: Modifier = Modifier) {
                 loginMode = loginMode,
                 onLoginModeChange = { loginMode = it },
                 onLoggedIn = onLoggedIn,
-                onRefresh = {
-                    scope.launch {
-                        loginStatus = "正在获取二维码…"
-                        expired = false
-                        qrImage = null
-                        qrKey = withContext(Dispatchers.IO) {
-                            runCatching { NeteaseApi.qrKey() }.getOrElse {
-                                loginStatus = "获取二维码失败：${it.message}"
-                                null
-                            }
-                        }
-                    }
-                },
+                onRefresh = fetchQr,
             )
         } else {
             AccountBar(
@@ -219,6 +245,7 @@ fun DownloadPage(modifier: Modifier = Modifier) {
                         progress = 0f
                         doneCount = 0
                         failCount = 0
+                        onUpdateSettings { it.copy(neteaseCookie = null) }
                     }
                 },
             )
@@ -250,7 +277,7 @@ fun DownloadPage(modifier: Modifier = Modifier) {
                 )
                 DownloadRail(
                     outputDir = outputDir,
-                    onOutputDirChange = { outputDir = it },
+                    onOutputDirChange = { value -> onUpdateSettings { it.copy(outputDir = value) } },
                     busyAction = busyAction,
                     progress = progress,
                     doneCount = doneCount,
@@ -301,8 +328,8 @@ private fun LoginCard(
     qrImage: ImageBitmap?,
     loginStatus: String,
     expired: Boolean,
-    loginMode: LoginMode,
-    onLoginModeChange: (LoginMode) -> Unit,
+    loginMode: LoginMethod,
+    onLoginModeChange: (LoginMethod) -> Unit,
     onLoggedIn: (NeteaseAccount) -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -406,105 +433,61 @@ private fun LoginCard(
         }
     }
 
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier
-                .width(360.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(t.surface)
-                .border(1.dp, t.cardBorder, RoundedCornerShape(16.dp))
-                .padding(horizontal = 28.dp, vertical = 26.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                "登录网易云",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = t.text,
+    fun isBrowserError(status: String): Boolean =
+        status.startsWith("登录失败") ||
+            status.startsWith("未找到") ||
+            status.startsWith("无法") ||
+            status.startsWith("等待登录超时")
+
+    val qrError = expired ||
+        loginStatus.startsWith("获取二维码失败") ||
+        loginStatus.startsWith("二维码解析失败") ||
+        loginStatus.startsWith("登录状态获取失败")
+
+    LoginCardFrame(
+        title = "登录网易云",
+        subtitle = "登录后可读取你的歌单并生成下载任务",
+        tabs = {
+            LoginMethodTab(
+                "扫码登录",
+                selected = loginMode == LoginMethod.QR,
+                modifier = Modifier.weight(1f),
+                onClick = { onLoginModeChange(LoginMethod.QR) },
             )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "登录后可读取你的歌单并生成下载任务",
-                fontSize = 12.5.sp,
-                color = t.textSecondary,
+            LoginMethodTab(
+                "验证码登录",
+                selected = loginMode == LoginMethod.SMS,
+                modifier = Modifier.weight(1f),
+                onClick = { onLoginModeChange(LoginMethod.SMS) },
             )
-            Spacer(Modifier.height(16.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(t.surfaceSoft)
-                    .padding(3.dp),
-            ) {
-                LoginModeTab("扫码登录", selected = loginMode == LoginMode.QR, modifier = Modifier.weight(1f), onClick = { onLoginModeChange(LoginMode.QR) })
-                LoginModeTab("验证码登录", selected = loginMode == LoginMode.SMS, modifier = Modifier.weight(1f), onClick = { onLoginModeChange(LoginMode.SMS) })
-                LoginModeTab("浏览器登录", selected = loginMode == LoginMode.BROWSER, modifier = Modifier.weight(1f), onClick = { onLoginModeChange(LoginMode.BROWSER) })
-            }
-            Spacer(Modifier.height(18.dp))
-            if (loginMode == LoginMode.QR) {
-                Box(
-                    modifier = Modifier
-                        .size(248.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(t.surfaceSoft)
-                        .border(1.dp, t.border, RoundedCornerShape(14.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (qrImage != null) {
-                        Image(
-                            bitmap = qrImage,
-                            contentDescription = "登录二维码",
-                            modifier = Modifier.size(232.dp),
-                        )
-                    } else {
-                        Icon(
-                            Icons.Outlined.QrCodeScanner,
-                            contentDescription = null,
-                            tint = t.textMuted.copy(alpha = 0.5f),
-                            modifier = Modifier.size(52.dp),
-                        )
-                    }
-                }
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    if (loginStatus.isBlank()) "点击下方按钮获取二维码" else loginStatus,
-                    fontSize = 13.sp,
-                    fontWeight = if (expired) FontWeight.Medium else FontWeight.Normal,
-                    color = if (expired) t.error else t.textSecondary,
-                    textAlign = TextAlign.Center,
+            LoginMethodTab(
+                "浏览器登录",
+                selected = loginMode == LoginMethod.BROWSER,
+                modifier = Modifier.weight(1f),
+                onClick = { onLoginModeChange(LoginMethod.BROWSER) },
+            )
+        },
+    ) {
+        when (loginMode) {
+            LoginMethod.QR -> QrLoginPanel(
+                qrImage = qrImage,
+                status = loginStatus,
+                statusError = qrError,
+                defaultStatus = "点击下方按钮获取二维码",
+                footer = "使用网易云 App「扫一扫」完成登录；若账号触发安全验证，请改用验证码登录",
+                onRefresh = onRefresh,
+            )
+
+            LoginMethod.SMS -> {
+                val fieldColors = TextFieldDefaults.colors(
+                    focusedContainerColor = t.surfaceSoft,
+                    unfocusedContainerColor = t.surfaceSoft,
+                    focusedTextColor = t.text,
+                    unfocusedTextColor = t.text,
+                    focusedIndicatorColor = t.primary,
+                    unfocusedIndicatorColor = t.border,
+                    cursorColor = t.primary,
                 )
-                Spacer(Modifier.height(14.dp))
-                Button(
-                    onClick = onRefresh,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = t.primary,
-                        contentColor = t.onPrimary,
-                    ),
-                    modifier = Modifier.height(44.dp),
-                ) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (qrImage == null) "获取二维码" else "刷新二维码", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "使用网易云 App「扫一扫」完成登录；若账号触发安全验证，请改用验证码登录",
-                    fontSize = 11.5.sp,
-                    color = t.textMuted,
-                    textAlign = TextAlign.Center,
-                )
-            }
-            val fieldColors = TextFieldDefaults.colors(
-                focusedContainerColor = t.surfaceSoft,
-                unfocusedContainerColor = t.surfaceSoft,
-                focusedTextColor = t.text,
-                unfocusedTextColor = t.text,
-                focusedIndicatorColor = t.primary,
-                unfocusedIndicatorColor = t.border,
-                cursorColor = t.primary,
-            )
-            if (loginMode == LoginMode.SMS) {
                 OutlinedTextField(
                     value = phone,
                     onValueChange = { phone = it.filter(Char::isDigit).take(11) },
@@ -571,103 +554,24 @@ private fun LoginCard(
                     color = if (smsStatus.startsWith("登录失败") || smsStatus.startsWith("发送失败") || smsStatus.startsWith("请输入")) t.error else t.textSecondary,
                     textAlign = TextAlign.Center,
                 )
-            } else {
-                Button(
-                    onClick = { doBrowserLogin() },
-                    enabled = !browserBusy,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = t.primary,
-                        contentColor = t.onPrimary,
-                    ),
-                    modifier = Modifier.fillMaxWidth().height(44.dp),
-                ) {
-                    if (browserBusy) {
-                        Text("请稍候…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    } else {
-                        Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("打开浏览器自动登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    if (browserStatus.isBlank()) "将打开浏览器进入网易云登录页，登录成功后自动读取登录态" else browserStatus,
-                    fontSize = 12.5.sp,
-                    color = if (browserStatus.startsWith("登录失败") || browserStatus.startsWith("未找到") || browserStatus.startsWith("无法") || browserStatus.startsWith("等待登录超时")) t.error else t.textSecondary,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(14.dp))
-                HorizontalDivider(color = t.rowDivider)
-                Spacer(Modifier.height(14.dp))
-                Text(
-                    "浏览器不可用时，可手动粘贴 Cookie：",
-                    fontSize = 12.5.sp,
-                    color = t.textSecondary,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = cookieText,
-                    onValueChange = { cookieText = it },
-                    placeholder = { Text("MUSIC_U=xxx; NMTID=yyy; …", fontSize = 12.sp, color = t.textMuted) },
-                    colors = fieldColors,
-                    shape = RoundedCornerShape(12.dp),
-                    minLines = 3,
-                    maxLines = 5,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = { doCookieLogin() },
-                    enabled = !cookieBusy,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = t.primarySoft,
-                        contentColor = t.primary,
-                    ),
-                    modifier = Modifier.fillMaxWidth().height(40.dp),
-                ) {
-                    if (cookieBusy) {
-                        Text("请稍候…", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    } else {
-                        Text("Cookie 登录", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    if (cookieStatus.isBlank()) "登录后 Cookie 仅保存在本次会话内" else cookieStatus,
-                    fontSize = 12.5.sp,
-                    color = if (cookieStatus.startsWith("登录失败") || cookieStatus.startsWith("请")) t.error else t.textSecondary,
-                    textAlign = TextAlign.Center,
-                )
             }
-        }
-    }
-}
 
-@Composable
-private fun LoginModeTab(
-    label: String,
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val t = cleanTokens()
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) t.primary else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) t.onPrimary else t.textSecondary,
-        )
+            LoginMethod.BROWSER -> BrowserLoginPanel(
+                browserStatus = browserStatus,
+                browserBusy = browserBusy,
+                browserError = isBrowserError(browserStatus),
+                browserDefaultStatus = "将打开浏览器进入网易云登录页，登录成功后自动读取登录态",
+                onBrowserLogin = { doBrowserLogin() },
+                cookieText = cookieText,
+                onCookieTextChange = { cookieText = it },
+                cookieStatus = cookieStatus,
+                cookieBusy = cookieBusy,
+                cookieError = cookieStatus.startsWith("登录失败") || cookieStatus.startsWith("请"),
+                cookiePlaceholder = "MUSIC_U=xxx; NMTID=yyy; …",
+                cookieDefaultStatus = "登录后会自动保存到本机配置文件",
+                onCookieLogin = { doCookieLogin() },
+            )
+        }
     }
 }
 
@@ -1136,16 +1040,6 @@ private fun runBatch(
 // ============================================================
 //  工具
 // ============================================================
-
-/** 下载页默认输出目录：用户主目录下的 Music/MusicUnlock。 */
-private fun downloadDefaultOutputDir(): String {
-    val home = System.getProperty("user.home")
-    return if (!home.isNullOrBlank()) {
-        File(home, "Music/MusicUnlock").absolutePath
-    } else {
-        File("output").absolutePath
-    }
-}
 
 private fun qrBitmap(content: String, size: Int, fg: Int, bg: Int): BufferedImage? {
     return try {

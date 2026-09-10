@@ -26,18 +26,13 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.Public
-import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,9 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -67,15 +60,26 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import musicunlock.ui.BrowserLoginPanel
+import musicunlock.ui.LoginCardFrame
+import musicunlock.ui.LoginMethod
+import musicunlock.ui.LoginMethodTab
+import musicunlock.ui.QrLoginPanel
 import musicunlock.ui.cleanTokens
 import musicunlock.ui.FileDialogs
+import musicunlock.settings.AppSettings
+import musicunlock.settings.SettingsUpdate
 import java.io.ByteArrayInputStream
 import java.io.File
 import javax.imageio.ImageIO
 
 /** QQ 音乐下载页：登录 → 选择歌单 → 下载 MP3（与网易云下载页交互一致）。 */
 @Composable
-fun QqDownloadPage(modifier: Modifier = Modifier) {
+fun QqDownloadPage(
+    settings: AppSettings,
+    onUpdateSettings: SettingsUpdate,
+    modifier: Modifier = Modifier,
+) {
     val scope = rememberCoroutineScope()
     val t = cleanTokens()
 
@@ -83,14 +87,14 @@ fun QqDownloadPage(modifier: Modifier = Modifier) {
     var qrImage by remember { mutableStateOf<ImageBitmap?>(null) }
     var loginStatus by remember { mutableStateOf("") }
     var expired by remember { mutableStateOf(false) }
-    var loginMode by remember { mutableStateOf(QqLoginMode.QR) }
+    var loginMode by remember { mutableStateOf(LoginMethod.QR) }
 
     var playlists by remember { mutableStateOf<List<QqPlaylist>>(emptyList()) }
     val selected = remember { mutableStateListOf<Long>() }
     var loadingPlaylists by remember { mutableStateOf(false) }
     var playlistError by remember { mutableStateOf<String?>(null) }
 
-    var outputDir by remember { mutableStateOf(downloadDefaultOutputDir()) }
+    val outputDir = settings.outputDir
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
     var doneCount by remember { mutableStateOf(0) }
@@ -99,6 +103,10 @@ fun QqDownloadPage(modifier: Modifier = Modifier) {
 
     // 登录成功：写入账号并加载歌单
     val onLoggedIn: (QqAccount) -> Unit = { acc ->
+        val cookie = QqMusicApi.exportSessionCookie()
+        if (!cookie.isNullOrBlank()) {
+            onUpdateSettings { it.copy(qqCookie = cookie) }
+        }
         account = acc
         loginStatus = "登录成功"
         loadQqPlaylists(
@@ -134,40 +142,67 @@ fun QqDownloadPage(modifier: Modifier = Modifier) {
             }
         }
     }
-    LaunchedEffect(Unit) { fetchQr() }
+    // 启动时优先恢复上次登录；Cookie 失效时清空保存值并展示二维码。
+    LaunchedEffect(Unit) {
+        val saved = settings.qqCookie
+        if (saved.isNullOrBlank()) {
+            fetchQr()
+            return@LaunchedEffect
+        }
+        loginStatus = "正在恢复登录状态…"
+        val result = withContext(Dispatchers.IO) {
+            runCatching { QqMusicApi.restoreSession(saved) }
+        }
+        result.onSuccess(onLoggedIn).onFailure {
+            loginStatus = "登录状态恢复失败，可重新登录"
+            fetchQr()
+        }
+    }
 
     // 轮询扫码状态
     LaunchedEffect(account, qrImage) {
         if (account != null || qrImage == null) return@LaunchedEffect
         loginStatus = "等待扫码"
         while (isActive && account == null) {
-            val poll = withContext(Dispatchers.IO) {
-                runCatching { QqMusicApi.pollQr() }.getOrNull()
+            val pollResult = withContext(Dispatchers.IO) {
+                runCatching { QqMusicApi.pollQr() }
             }
-            when (poll?.state) {
+            val poll = pollResult.getOrNull()
+            if (poll == null) {
+                loginStatus = pollResult.exceptionOrNull()?.message
+                    ?: "登录状态查询失败，请刷新后重试"
+                expired = true
+                break
+            }
+
+            when (poll.state) {
                 QqLoginState.EXPIRED -> {
-                    loginStatus = "二维码已失效，请刷新"
+                    loginStatus = poll.message ?: "二维码已失效，请刷新"
                     expired = true
+                    break
                 }
-                QqLoginState.SCANNED -> loginStatus = "已扫码，请在手机上确认登录"
+                QqLoginState.SCANNED -> loginStatus = poll.message ?: "已扫码，请在手机上确认登录"
                 QqLoginState.ERROR -> {
                     loginStatus = poll.message ?: "登录状态异常，请重试"
+                    expired = true
                     break
                 }
                 QqLoginState.SUCCESS -> {
                     loginStatus = "登录成功，正在获取账号信息…"
-                    val acc = withContext(Dispatchers.IO) {
-                        runCatching { QqMusicApi.finishQrLogin() }.getOrNull()
+                    val finishResult = withContext(Dispatchers.IO) {
+                        runCatching { QqMusicApi.finishQrLogin() }
                     }
+                    val acc = finishResult.getOrNull()
                     if (acc != null) {
                         onLoggedIn(acc)
                     } else {
-                        loginStatus = "登录状态获取失败，请重试或改用 Cookie 登录"
+                        loginStatus = finishResult.exceptionOrNull()?.message
+                            ?: "登录状态获取失败，请重试或改用 Cookie 登录"
                         expired = true
                         break
                     }
                 }
-                else -> loginStatus = "等待扫码"
+                QqLoginState.WAIT -> loginStatus = poll.message ?: "等待扫码"
             }
             delay(2000)
         }
@@ -202,6 +237,7 @@ fun QqDownloadPage(modifier: Modifier = Modifier) {
                         progress = 0f
                         doneCount = 0
                         failCount = 0
+                        onUpdateSettings { it.copy(qqCookie = null) }
                         fetchQr()
                     }
                 },
@@ -234,7 +270,7 @@ fun QqDownloadPage(modifier: Modifier = Modifier) {
                 )
                 QqDownloadRail(
                     outputDir = outputDir,
-                    onOutputDirChange = { outputDir = it },
+                    onOutputDirChange = { value -> onUpdateSettings { it.copy(outputDir = value) } },
                     busy = busy,
                     progress = progress,
                     doneCount = doneCount,
@@ -264,15 +300,13 @@ fun QqDownloadPage(modifier: Modifier = Modifier) {
 //  登录卡片
 // ============================================================
 
-private enum class QqLoginMode { QR, BROWSER }
-
 @Composable
 private fun QqLoginCard(
     qrImage: ImageBitmap?,
     loginStatus: String,
     expired: Boolean,
-    loginMode: QqLoginMode,
-    onLoginModeChange: (QqLoginMode) -> Unit,
+    loginMode: LoginMethod,
+    onLoginModeChange: (LoginMethod) -> Unit,
     onLoggedIn: (QqAccount) -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -327,195 +361,59 @@ private fun QqLoginCard(
             status.startsWith("浏览器登录失败") ||
             status.startsWith("等待登录超时")
 
-    val fieldColors = TextFieldDefaults.colors(
-        focusedContainerColor = t.surfaceSoft,
-        unfocusedContainerColor = t.surfaceSoft,
-        focusedIndicatorColor = t.primary,
-        unfocusedIndicatorColor = t.border,
-        focusedTextColor = t.text,
-        unfocusedTextColor = t.text,
-        cursorColor = t.primary,
-    )
+    val qrError = expired ||
+        loginStatus.startsWith("获取二维码失败") ||
+        loginStatus.startsWith("二维码解析失败") ||
+        loginStatus.startsWith("登录状态异常") ||
+        loginStatus.startsWith("登录状态获取失败") ||
+        loginStatus.startsWith("QQ 扫码状态接口拒绝")
 
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier
-                .width(400.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(t.surface)
-                .border(1.dp, t.cardBorder, RoundedCornerShape(16.dp))
-                .padding(horizontal = 28.dp, vertical = 26.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text("登录 QQ 音乐", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = t.text)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "登录后可读取你的歌单并生成下载任务",
-                fontSize = 12.5.sp,
-                color = t.textSecondary,
-                textAlign = TextAlign.Center,
+    LoginCardFrame(
+        title = "登录 QQ 音乐",
+        subtitle = "登录后可读取你的歌单并生成下载任务",
+        tabs = {
+            LoginMethodTab(
+                "扫码登录",
+                selected = loginMode == LoginMethod.QR,
+                modifier = Modifier.weight(1f),
+                onClick = { onLoginModeChange(LoginMethod.QR) },
             )
-            Spacer(Modifier.height(16.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(t.surfaceSoft)
-                    .padding(3.dp),
-            ) {
-                QqLoginModeTab("扫码登录", selected = loginMode == QqLoginMode.QR, modifier = Modifier.weight(1f)) { onLoginModeChange(QqLoginMode.QR) }
-                QqLoginModeTab("浏览器登录", selected = loginMode == QqLoginMode.BROWSER, modifier = Modifier.weight(1f)) { onLoginModeChange(QqLoginMode.BROWSER) }
-            }
-            Spacer(Modifier.height(18.dp))
-            if (loginMode == QqLoginMode.QR) {
-                Box(
-                    modifier = Modifier
-                        .size(240.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(t.surfaceSoft)
-                        .border(1.dp, t.border, RoundedCornerShape(14.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (qrImage != null) {
-                        Image(
-                            bitmap = qrImage!!,
-                            contentDescription = "登录二维码",
-                            filterQuality = FilterQuality.Medium,
-                            modifier = Modifier.size(232.dp),
-                        )
-                    } else {
-                        Icon(Icons.Outlined.QrCodeScanner, contentDescription = null, tint = t.textMuted, modifier = Modifier.size(48.dp))
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = onRefresh,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = t.primarySoft,
-                        contentColor = t.primary,
-                    ),
-                    modifier = Modifier.fillMaxWidth().height(40.dp),
-                ) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("刷新二维码", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    if (loginStatus.isBlank()) "使用手机 QQ 扫一扫登录" else loginStatus,
-                    fontSize = 12.5.sp,
-                    color = if (loginStatus.startsWith("获取二维码失败") || loginStatus.startsWith("登录状态获取失败") || loginStatus.startsWith("二维码已失效")) t.error else t.textSecondary,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "扫码后请在手机上确认登录",
-                    fontSize = 12.sp,
-                    color = t.textMuted,
-                    textAlign = TextAlign.Center,
-                )
-            } else {
-                Button(
-                    onClick = { doBrowserLogin() },
-                    enabled = !browserBusy,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = t.primary,
-                        contentColor = t.onPrimary,
-                        disabledContainerColor = t.surfaceSoft,
-                        disabledContentColor = t.textMuted,
-                    ),
-                    modifier = Modifier.fillMaxWidth().height(44.dp),
-                ) {
-                    if (browserBusy) {
-                        Text("请稍候…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    } else {
-                        Icon(Icons.Outlined.Public, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("打开浏览器自动登录", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    if (browserStatus.isBlank()) "将自动打开本机浏览器进入 QQ 音乐登录页，登录成功后自动读取登录态" else browserStatus,
-                    fontSize = 12.5.sp,
-                    color = if (isBrowserError(browserStatus)) t.error else t.textSecondary,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(14.dp))
-                HorizontalDivider(color = t.rowDivider)
-                Spacer(Modifier.height(14.dp))
-                Text(
-                    "浏览器不可用时，可手动粘贴 Cookie：",
-                    fontSize = 12.5.sp,
-                    color = t.textSecondary,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = cookieText,
-                    onValueChange = { cookieText = it },
-                    placeholder = { Text("uin=xxx; qm_keyst=yyy; qqmusic_key=zzz; …", fontSize = 12.sp, color = t.textMuted) },
-                    colors = fieldColors,
-                    shape = RoundedCornerShape(12.dp),
-                    minLines = 3,
-                    maxLines = 5,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = { doCookieLogin() },
-                    enabled = !cookieBusy,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = t.primarySoft,
-                        contentColor = t.primary,
-                        disabledContainerColor = t.surfaceSoft,
-                        disabledContentColor = t.textMuted,
-                    ),
-                    modifier = Modifier.fillMaxWidth().height(40.dp),
-                ) {
-                    if (cookieBusy) {
-                        Text("请稍候…", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    } else {
-                        Text("Cookie 登录", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    if (cookieStatus.isBlank()) "登录后 Cookie 仅保存在本次会话内" else cookieStatus,
-                    fontSize = 12.5.sp,
-                    color = if (cookieStatus.startsWith("登录失败") || cookieStatus.startsWith("请")) t.error else t.textSecondary,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun QqLoginModeTab(
-    label: String,
-    selected: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val t = cleanTokens()
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) t.primary else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
-        contentAlignment = Alignment.Center,
+            LoginMethodTab(
+                "浏览器登录",
+                selected = loginMode == LoginMethod.BROWSER,
+                modifier = Modifier.weight(1f),
+                onClick = { onLoginModeChange(LoginMethod.BROWSER) },
+            )
+        },
     ) {
-        Text(
-            label,
-            fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) t.onPrimary else t.textSecondary,
-        )
+        when (loginMode) {
+            LoginMethod.QR -> QrLoginPanel(
+                qrImage = qrImage,
+                status = loginStatus,
+                statusError = qrError,
+                defaultStatus = "使用手机 QQ 扫一扫登录",
+                footer = "扫码后请在手机上确认登录",
+                onRefresh = onRefresh,
+            )
+
+            LoginMethod.BROWSER -> BrowserLoginPanel(
+                browserStatus = browserStatus,
+                browserBusy = browserBusy,
+                browserError = isBrowserError(browserStatus),
+                browserDefaultStatus = "将自动打开本机浏览器进入 QQ 音乐登录页，登录成功后自动读取登录态",
+                onBrowserLogin = { doBrowserLogin() },
+                cookieText = cookieText,
+                onCookieTextChange = { cookieText = it },
+                cookieStatus = cookieStatus,
+                cookieBusy = cookieBusy,
+                cookieError = cookieStatus.startsWith("登录失败") || cookieStatus.startsWith("请"),
+                cookiePlaceholder = "uin=xxx; qm_keyst=yyy; qqmusic_key=zzz; …",
+                cookieDefaultStatus = "登录后会自动保存到本机配置文件",
+                onCookieLogin = { doCookieLogin() },
+            )
+
+            LoginMethod.SMS -> Unit
+        }
     }
 }
 
@@ -946,14 +844,5 @@ private fun loadQqPlaylists(
             val message = it.message ?: "未知错误"
             setError(if (it is QqAuthExpiredException) "登录已失效，请退出后重新登录" else "加载歌单失败：$message")
         }
-    }
-}
-
-private fun downloadDefaultOutputDir(): String {
-    val home = System.getProperty("user.home")
-    return if (!home.isNullOrBlank()) {
-        File(home, "Music/MusicUnlock").absolutePath
-    } else {
-        File("output").absolutePath
     }
 }
