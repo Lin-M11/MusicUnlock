@@ -29,6 +29,9 @@ import java.time.Duration
 object QqMusicApi {
 
     private const val MUSICU = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+
+    /** 播放地址模块：与 Y.QQ 网页播放器一致，响应以该模块名为键返回。 */
+    private const val VKEY_MODULE = "vkey.GetVkeyServer"
     private const val USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     private const val VERSION_CODE = 13020508
@@ -333,8 +336,24 @@ object QqMusicApi {
             "guid" to guid(),
             "songmid" to arrayOf(song.mid),
             "songtype" to arrayOf(0),
+            "uin" to cred.musicid,
+            "loginflag" to 1,
+            "platform" to "20",
         )
-        val body = moduleBody("music.vkey.GetVkey.UrlGetVkey", "UrlGetVkey", param, ct = "19")
+        val body = jsonBody(
+            "comm" to linkedMapOf<String, Any?>(
+                "uin" to cred.musicid,
+                "format" to "json",
+                "ct" to 24,
+                "cv" to 0,
+                "tmeAppID" to "qqmusic",
+            ),
+            VKEY_MODULE to mapOf(
+                "module" to VKEY_MODULE,
+                "method" to "CgiGetVkey",
+                "param" to param,
+            ),
+        )
         val raw = postMusicu(body, cred)
         return parseSongUrl(raw)
     }
@@ -456,12 +475,13 @@ object QqMusicApi {
     /** 解析 vkey 响应；无 purl 时 reason 给出明确原因。 */
     internal fun parseSongUrl(raw: String): QqSongUrlResult {
         val root = parseObject(raw)
-        val module = root.module("music.vkey.GetVkey.UrlGetVkey")
+        val module = root.module(VKEY_MODULE)
             ?: return QqSongUrlResult(null, "获取播放地址失败：未返回数据")
         throwIfAuthExpired(module)
-        val data = module.obj("data") ?: return QqSongUrlResult(null, "获取播放地址失败：未返回数据")
+        val data = module.obj("data")
+            ?: return QqSongUrlResult(null, "获取播放地址失败（接口返回 ${module.code()}）")
         val info = data.arr("midurlinfo")?.firstOrNull()?.asJsonObjectOrNull()
-            ?: return QqSongUrlResult(null, "获取播放地址失败：未返回数据")
+            ?: return QqSongUrlResult(null, "获取播放地址失败：接口未返回播放信息")
         val purl = info.str("purl")?.takeIf { it.isNotBlank() }
         if (purl != null) {
             return QqSongUrlResult("https://isure.stream.qqmusic.qq.com/$purl", null)

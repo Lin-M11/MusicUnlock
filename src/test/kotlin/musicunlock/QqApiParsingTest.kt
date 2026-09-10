@@ -99,7 +99,7 @@ class QqApiParsingTest {
     @Test
     fun `解析播放地址成功`() {
         val raw = """
-            {"code":0,"music.vkey.GetVkey.UrlGetVkey":{"code":0,"data":{
+            {"code":0,"vkey.GetVkeyServer":{"code":0,"data":{
               "midurlinfo":[{"songmid":"003UblNw1eaRkY","filename":"M800003UblNw1eaRkY003UblNw1eaRkY.mp3",
                 "purl":"M800003UblNw1eaRkY003UblNw1eaRkY.mp3?guid=abc&vkey=VVV&uin=10001&fromtag=3","result":0}]}}}
         """.trimIndent()
@@ -112,7 +112,7 @@ class QqApiParsingTest {
     @Test
     fun `VIP 专属歌曲给出明确原因`() {
         val raw = """
-            {"code":0,"music.vkey.GetVkey.UrlGetVkey":{"code":0,"data":{
+            {"code":0,"vkey.GetVkeyServer":{"code":0,"data":{
               "midurlinfo":[{"songmid":"0039MnYb0qxYhV","filename":"M8000039MnYb0qxYhV0039MnYb0qxYhV.mp3",
                 "purl":"","uiAlert":41,"pneedbuy":1,"result":22}]}}}
         """.trimIndent()
@@ -124,13 +124,22 @@ class QqApiParsingTest {
     @Test
     fun `数字专辑歌曲给出购买提示`() {
         val raw = """
-            {"code":0,"music.vkey.GetVkey.UrlGetVkey":{"code":0,"data":{
+            {"code":0,"vkey.GetVkeyServer":{"code":0,"data":{
               "midurlinfo":[{"songmid":"0039MnYb0qxYhV","filename":"M800x.mp3","purl":"",
                 "uiAlert":0,"pneedbuy":1,"result":22}]}}}
         """.trimIndent()
         val result = QqMusicApi.parseSongUrl(raw)
         assertTrue(!result.ok)
         assertTrue(result.reason!!.contains("购买"))
+    }
+
+    @Test
+    fun `播放地址接口拒绝时给出返回码`() {
+        // 接口对非法/过期请求返回模块错误码且不带 data，需给出可诊断的信息
+        val raw = """{"code":0,"vkey.GetVkeyServer":{"code":500003,"subcode":860100005}}"""
+        val result = QqMusicApi.parseSongUrl(raw)
+        assertTrue(!result.ok)
+        assertTrue(result.reason!!.contains("500003"))
     }
 
     @Test
