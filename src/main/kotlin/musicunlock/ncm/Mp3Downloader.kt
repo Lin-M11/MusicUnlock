@@ -1,5 +1,6 @@
 package musicunlock.ncm
 
+import musicunlock.service.AudioTranscoder
 import musicunlock.service.TagWriter
 import java.io.File
 import java.nio.file.Files
@@ -16,8 +17,8 @@ class DownloadOutcome(
  * 高码率优先（320k → 192k → 128k），不可用时逐级降级；
  * 下载完成后写回歌名 / 歌手 / 专辑 / 封面标签。
  *
- * 当官方返回的不是 MP3（如 FLAC）时，使用系统 ffmpeg 转码为 MP3；
- * 未安装 ffmpeg 时保留原音频并给出提示（仍可播放、标签仍会写回）。
+ * 当官方返回的不是 MP3（如 FLAC）时，使用应用内置 ffmpeg 转码为 MP3；
+ * 转码失败时保留原音频并给出提示（仍可播放、标签仍会写回）。
  */
 object Mp3Downloader {
 
@@ -42,7 +43,7 @@ object Mp3Downloader {
             try {
                 NeteaseApi.download(songUrl.url, temp.toPath())
 
-                // 3. 判断真实音频格式：源已是 MP3 直接使用；否则用 ffmpeg 转码；无 ffmpeg 保留原格式
+                // 3. 判断真实音频格式：源已是 MP3 直接使用，否则调用内置 ffmpeg 转码
                 val sourceExt = audioExtension(songUrl, temp)
                 val finalFile: File
                 val finalExt: String
@@ -56,7 +57,7 @@ object Mp3Downloader {
                         finalFile = transcoded
                         finalExt = "mp3"
                     } else {
-                        // 无 ffmpeg：保留原音频，仍写回标签
+                        // 转码失败：保留原音频，仍写回标签
                         finalFile = temp
                         finalExt = sourceExt
                     }
@@ -80,7 +81,7 @@ object Mp3Downloader {
                     cover = cover,
                 )
 
-                val note = if (finalExt.equals("mp3", ignoreCase = true)) "MP3" else "已下载（${finalExt.uppercase()}，未安装 ffmpeg 未转码）"
+                val note = if (finalExt.equals("mp3", ignoreCase = true)) "MP3" else "已下载（${finalExt.uppercase()}，ffmpeg 转码失败）"
                 DownloadOutcome(true, output, note)
             } finally {
                 if (temp.exists()) temp.delete()
@@ -133,46 +134,13 @@ object Mp3Downloader {
         }
     }
 
-    /** 使用系统 ffmpeg 转码为 MP3；失败或未安装返回 null。 */
+    /** 使用内置 ffmpeg 转码为 MP3；失败返回 null。 */
     private fun transcodeToMp3(input: File): File? {
-        val ffmpeg = locateFfmpeg() ?: return null
         val output = File.createTempFile("musicunlock-", ".mp3", input.parentFile)
-        return try {
-            val command = listOf(
-                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-                "-i", input.absolutePath,
-                "-vn", "-codec:a", "libmp3lame", "-b:a", "320k",
-                output.absolutePath,
-            )
-            val process = ProcessBuilder(command).redirectErrorStream(true).start()
-            val log = process.inputStream.bufferedReader().readText()
-            val exit = process.waitFor()
-            if (exit == 0 && output.exists() && output.length() > 0) {
-                output
-            } else {
-                println("ffmpeg 转码失败: $log")
-                output.delete()
-                null
-            }
-        } catch (e: Exception) {
-            output.delete()
-            null
-        }
-    }
-
-    /** 查找 ffmpeg：优先环境变量 FFMPEG_BIN，其次 PATH，最后常见安装路径。 */
-    fun locateFfmpeg(): String? {
-        System.getenv("FFMPEG_BIN")?.takeIf { File(it).canExecute() }?.let { return it }
-        val pathDirs = System.getenv("PATH").orEmpty().split(File.pathSeparator)
-        for (dir in pathDirs) {
-            val candidate = File(dir, if (isWindows()) "ffmpeg.exe" else "ffmpeg")
-            if (candidate.canExecute()) return candidate.absolutePath
-        }
-        if (isMac()) {
-            for (p in listOf("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg")) {
-                if (File(p).canExecute()) return p
-            }
-        }
+        val error = AudioTranscoder.toMp3(input, output, 320)
+        if (error == null) return output
+        println("ffmpeg 转码失败: $error")
+        output.delete()
         return null
     }
 
@@ -212,7 +180,4 @@ object Mp3Downloader {
         return if (idx > 0 && idx < name.length - 1) name.substring(idx + 1) else FALLBACK_EXT
     }
 
-    private fun isWindows(): Boolean = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
-
-    private fun isMac(): Boolean = System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
 }
