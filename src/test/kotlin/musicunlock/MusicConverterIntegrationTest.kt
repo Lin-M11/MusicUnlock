@@ -3,7 +3,6 @@ package musicunlock
 import musicunlock.service.AudioTranscoder
 import musicunlock.service.MusicConverter
 import musicunlock.settings.OutputFormat
-import org.junit.Assume.assumeTrue
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import kotlin.test.Test
@@ -61,7 +60,10 @@ class MusicConverterIntegrationTest {
 
     @Test
     fun convertMflacToMp3EndToEnd() {
-        assumeTrue("本机未安装 ffmpeg，跳过 MP3 转码测试", AudioTranscoder.locateFfmpeg() != null)
+        val ffmpeg = AudioTranscoder.locateFfmpeg()
+        assertTrue(ffmpeg != null, "应用应包含可用的内置 ffmpeg")
+        val normalizedPath = ffmpeg.orEmpty().replace('\\', '/')
+        assertTrue(normalizedPath.contains(".musicunlock/runtime/ffmpeg-"), "应使用应用解压的内置 ffmpeg")
         val raw = load("mflac_map_raw.bin")
         val suffix = load("mflac_map_suffix.bin")
         val dir = Files.createTempDirectory("musicunlock-mp3-test")

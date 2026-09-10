@@ -46,6 +46,11 @@ SOFTWARE.
 | ZXing（二维码生成） | 3.5.3 | Apache-2.0 |
 | jaudiotagger | 3.0.1 | LGPL-2.1 |
 | kotlinx-coroutines | 1.9.0 | Apache-2.0 |
+| FFmpeg 运行库（Bytedeco 构建） | 7.1-1.5.11 | LGPL-3.0-or-later |
+
+内置 FFmpeg 来自 [JavaCPP Presets](https://github.com/bytedeco/javacpp-presets) 的官方
+Maven Central 构建，使用 LGPL-3.0-or-later 许可。FFmpeg 项目与许可信息：
+<https://ffmpeg.org/legal.html>。
 
 ## 测试数据
 

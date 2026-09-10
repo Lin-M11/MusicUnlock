@@ -3,13 +3,13 @@ package musicunlock.service
 import java.io.File
 import java.util.concurrent.TimeUnit
 
-/** 通过系统 ffmpeg 进行音频转码。 */
+/** 通过应用内置 ffmpeg 进行音频转码。 */
 object AudioTranscoder {
 
     /** 转码为指定码率的 MP3；成功返回 null，失败返回可直接展示的原因。 */
     fun toMp3(input: File, output: File, bitrateKbps: Int): String? {
         val ffmpeg = locateFfmpeg()
-            ?: return "未找到 ffmpeg，无法输出 MP3。请安装 ffmpeg 后重试"
+            ?: return "当前应用包缺少适用于本机的 ffmpeg 运行库，无法输出 MP3"
         val command = listOf(
             ffmpeg,
             "-y",
@@ -45,25 +45,6 @@ object AudioTranscoder {
         }
     }
 
-    /** 查找 ffmpeg：优先环境变量 FFMPEG_BIN，其次 PATH，最后常见安装路径。 */
-    fun locateFfmpeg(): String? {
-        System.getenv("FFMPEG_BIN")?.takeIf { File(it).canExecute() }?.let { return it }
-        val pathDirs = System.getenv("PATH").orEmpty().split(File.pathSeparator)
-        for (dir in pathDirs) {
-            val candidate = File(dir, if (isWindows()) "ffmpeg.exe" else "ffmpeg")
-            if (candidate.canExecute()) return candidate.absolutePath
-        }
-        if (isMac()) {
-            for (path in listOf("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg")) {
-                if (File(path).canExecute()) return path
-            }
-        }
-        return null
-    }
-
-    private fun isWindows(): Boolean =
-        System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
-
-    private fun isMac(): Boolean =
-        System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
+    /** 返回应用内置 ffmpeg 的可执行路径。 */
+    fun locateFfmpeg(): String? = BundledFfmpeg.locate()
 }
