@@ -70,6 +70,7 @@ internal fun AppIconButton(
     onClick: () -> Unit,
     enabled: Boolean = true,
     danger: Boolean = false,
+    primary: Boolean = false,
     size: Dp = UiMetrics.IconButtonSize,
 ) {
     val t = cleanTokens()
@@ -78,12 +79,14 @@ internal fun AppIconButton(
     val focused by interaction.collectIsFocusedAsState()
     val background = when {
         !enabled -> Color.Transparent
+        primary -> t.primary
         danger && hovered -> t.errorSoft
         hovered -> t.surfaceSoft
         else -> Color.Transparent
     }
     val tint = when {
         !enabled -> t.textMuted.copy(alpha = 0.42f)
+        primary -> t.onPrimary
         danger && hovered -> t.error
         hovered -> t.text
         else -> t.textSecondary

@@ -49,7 +49,10 @@ import musicunlock.online.SearchResultKind
 import musicunlock.online.toOnlineDownloadPreferences
 import musicunlock.playlist.MusicLinkKind
 import musicunlock.playlist.MusicLinkResolver
+import musicunlock.player.AudioPlayerService
+import musicunlock.player.PlayerTrack
 import musicunlock.settings.AppSettings
+import musicunlock.service.TranscodeFormat
 import musicunlock.sync.CrossPlatformMatch
 import musicunlock.sync.CrossPlatformMatcher
 import java.io.File
@@ -58,6 +61,7 @@ import java.io.File
 internal fun DiscoverPage(
     settings: AppSettings,
     downloadManager: DownloadTaskManager,
+    audioPlayer: AudioPlayerService,
     crossPlatformMatcher: CrossPlatformMatcher,
     library: LibraryIndex,
     modifier: Modifier = Modifier,
@@ -87,19 +91,45 @@ internal fun DiscoverPage(
         return results
     }
 
-    fun enqueueSongs(provider: musicunlock.online.OnlineMusicProvider, songs: List<MusicSong>, label: String) {
+    fun enqueueSongs(
+        provider: musicunlock.online.OnlineMusicProvider,
+        songs: List<MusicSong>,
+        label: String,
+        forceMp3: Boolean = false,
+    ) {
         if (songs.isEmpty()) {
             status = "没有找到可下载的歌曲"
             return
+        }
+        val preferences = settings.toOnlineDownloadPreferences().let { current ->
+            if (forceMp3) current.copy(
+                targetFormat = TranscodeFormat.MP3,
+                forceMp3 = true,
+                mp3BitrateKbps = settings.bitrateKbps,
+            ) else current
         }
         downloadManager.enqueueBatch(
             provider = provider,
             songs = songs,
             outputDir = File(settings.outputDir),
-            preferences = settings.toOnlineDownloadPreferences(),
+            preferences = preferences,
             playlistName = label,
         )
-        status = "已把 ${songs.size} 首加入下载队列：$label"
+        status = if (forceMp3) "已把 ${songs.size} 首加入下载队列并转为 MP3：$label" else "已把 ${songs.size} 首加入下载队列：$label"
+    }
+
+    fun playResult(result: MusicSearchResult, allResults: List<MusicSearchResult>) {
+        val songs = allResults
+            .filter { it.kind == SearchResultKind.SONG && it.song != null }
+            .mapNotNull { item -> item.song?.let { song -> item.platform to song } }
+        val queue = songs.map { (platform, song) ->
+            PlayerTrack(platformId = platform.id, song = song, quality = musicunlock.settings.QualityStrategy.MP3_320)
+        }
+        val index = queue.indexOfFirst { it.platformId == result.platform.id && it.song.id == result.song?.id }
+        if (index >= 0) {
+            audioPlayer.playQueue(queue, index)
+            status = "正在播放：${result.title}"
+        }
     }
 
     fun enqueueResult(result: MusicSearchResult) {
@@ -286,6 +316,7 @@ internal fun DiscoverPage(
                                 }
                             }
                             if (result.kind == SearchResultKind.SONG && result.song != null) {
+                                SmallAction("播放") { playResult(result, results) }
                                 SmallAction("检测音质") {
                                     scope.launch {
                                         busy = true
@@ -317,7 +348,17 @@ internal fun DiscoverPage(
                                     }
                                 }
                             }
-                            SmallAction(if (result.kind == SearchResultKind.SONG) "下载" else "加入队列") { enqueueResult(result) }
+                            if (result.kind == SearchResultKind.SONG && result.song != null) {
+                                SmallAction("下载 MP3") {
+                                    enqueueSongs(
+                                        provider = ProviderRegistry.require(result.platform.id),
+                                        songs = listOf(result.song),
+                                        label = result.title,
+                                        forceMp3 = true,
+                                    )
+                                }
+                            }
+                            SmallAction(if (result.kind == SearchResultKind.SONG) "按设置下载" else "加入队列") { enqueueResult(result) }
                         }
                         Box(Modifier.fillMaxWidth().height(UiMetrics.Hairline).background(t.rowDivider))
                     }

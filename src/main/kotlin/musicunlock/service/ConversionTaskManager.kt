@@ -132,6 +132,7 @@ class ConversionTaskManager(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Any()
     private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val executionTokens = ConcurrentHashMap<String, Long>()
     private val lastPersist = ConcurrentHashMap<String, Long>()
     private val listeners = mutableListOf<(ConversionTaskSnapshot) -> Unit>()
 
@@ -199,6 +200,7 @@ class ConversionTaskManager(
     fun pause(id: String) {
         val task = find(id) ?: return
         if (!task.canPause) return
+        invalidateExecution(id)
         update(id) {
             it.copy(
                 state = ConversionTaskState.PAUSED,
@@ -229,6 +231,7 @@ class ConversionTaskManager(
     fun cancel(id: String) {
         val task = find(id) ?: return
         if (task.isTerminal) return
+        invalidateExecution(id)
         update(id) {
             it.copy(
                 state = ConversionTaskState.CANCELLED,
@@ -246,6 +249,7 @@ class ConversionTaskManager(
     fun retry(id: String) {
         val task = find(id) ?: return
         if (!task.canRetry) return
+        invalidateExecution(id)
         update(id) {
             it.copy(
                 state = ConversionTaskState.QUEUED,
@@ -281,6 +285,7 @@ class ConversionTaskManager(
     fun remove(id: String) {
         val task = find(id) ?: return
         if (!task.isTerminal) cancel(id)
+        invalidateExecution(id)
         updateTasks { tasks -> tasks.filterNot { it.id == id } }
     }
 
@@ -327,17 +332,18 @@ class ConversionTaskManager(
             for (task in queued) {
                 if (activeJobs.size >= limit) break
                 if (activeJobs.containsKey(task.id)) continue
-                val job = scope.launch { execute(task.id) }
+                val token = executionTokens.merge(task.id, 1L, Long::plus) ?: 1L
+                val job = scope.launch { execute(task.id, token) }
                 activeJobs[task.id] = job
                 job.invokeOnCompletion {
-                    activeJobs.remove(task.id)
+                    activeJobs.remove(task.id, job)
                     pump()
                 }
             }
         }
     }
 
-    private fun execute(id: String) {
+    private fun execute(id: String, token: Long) {
         val initial = find(id) ?: return
         val attempts = initial.attempts + 1
         update(id) {
@@ -361,11 +367,12 @@ class ConversionTaskManager(
                         it.id != id && it.contentHash == hash && it.state != ConversionTaskState.CANCELLED
                     }
                     if (match == null) {
-                        update(id, persist = true) { it.copy(contentHash = hash) }
+                        if (isCurrentExecution(id, token)) update(id, persist = true) { it.copy(contentHash = hash) }
                     }
                     match
                 }
                 if (duplicate != null) {
+                    if (!isCurrentExecution(id, token)) return
                     update(id) {
                         it.copy(
                             state = ConversionTaskState.DUPLICATE,
@@ -383,6 +390,7 @@ class ConversionTaskManager(
             val outcome = executor.execute(
                 task = find(id) ?: return,
                 onProgress = { progress, stage ->
+                    if (!isCurrentExecution(id, token)) return@execute
                     update(id, persist = false) {
                         it.copy(
                             state = ConversionTaskState.RUNNING,
@@ -404,6 +412,7 @@ class ConversionTaskManager(
                 outcome.skipped -> ConversionTaskState.SKIPPED
                 else -> ConversionTaskState.COMPLETED
             }
+            if (!isCurrentExecution(id, token)) return
             update(id) {
                 it.copy(
                     state = state,
@@ -419,6 +428,7 @@ class ConversionTaskManager(
                 outcome.outputPath?.let { path -> runCatching { library?.upsert(File(path), hash = false) } }
             }
         } catch (_: ConversionCancelledException) {
+            if (!isCurrentExecution(id, token)) return
             val current = find(id)
             if (current?.state != ConversionTaskState.PAUSED && current?.state != ConversionTaskState.CANCELLED) {
                 update(id) {
@@ -434,6 +444,7 @@ class ConversionTaskManager(
         } catch (_: CancellationException) {
             // 队列状态已由 pause/cancel/replace 写入，协程取消不覆盖它。
         } catch (e: Exception) {
+            if (!isCurrentExecution(id, token)) return
             val current = find(id)
             if (current?.state != ConversionTaskState.PAUSED && current?.state != ConversionTaskState.CANCELLED) {
                 update(id) {
@@ -516,6 +527,12 @@ class ConversionTaskManager(
     }.getOrDefault(emptyList())
 
     private fun classify(error: Throwable): ConversionErrorKind = classifyMessage(error.message.orEmpty())
+
+    private fun invalidateExecution(id: String) {
+        executionTokens.merge(id, 1L, Long::plus)
+    }
+
+    private fun isCurrentExecution(id: String, token: Long): Boolean = executionTokens[id] == token
 
     private fun classifyMessage(rawMessage: String): ConversionErrorKind {
         val message = rawMessage.lowercase()

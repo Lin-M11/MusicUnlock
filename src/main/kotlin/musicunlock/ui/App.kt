@@ -84,6 +84,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -143,14 +144,17 @@ import musicunlock.online.DownloadTaskState
 import musicunlock.library.LibraryIndex
 import musicunlock.library.LibraryMaintenanceService
 import musicunlock.online.MusicSong
+import musicunlock.online.toOnlineDownloadPreferences
 import musicunlock.playlist.LocalTrack
 import musicunlock.playlist.MatchOutcome
 import musicunlock.playlist.PlaylistImport
+import musicunlock.player.AudioPlayerService
 import musicunlock.qq.QqDownloadPage
 import musicunlock.qq.QqMusicApi
 import musicunlock.service.ConversionTaskManager
 import musicunlock.service.ConversionTaskState
 import musicunlock.service.MusicConverter
+import musicunlock.service.TranscodeFormat
 import musicunlock.settings.AppSettings
 import musicunlock.settings.DownloadExistingPolicy
 import musicunlock.settings.OutputFormat
@@ -230,10 +234,14 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
     var importOpen by remember { mutableStateOf(false) }
     val files = remember { mutableStateListOf<FileItem>() }
     val libraryIndex = remember { LibraryIndex() }
+    val audioPlayer = remember { AudioPlayerService() }
     val conversionManager = remember { ConversionTaskManager(library = libraryIndex) }
     val downloadManager = remember { DownloadTaskManager(library = libraryIndex, settingsProvider = { SettingsStore.load() }) }
     var sessionRevision by remember { mutableStateOf(0) }
     val updateSettings: SettingsUpdate = { transform -> settings = SettingsStore.update(transform) }
+    DisposableEffect(audioPlayer) {
+        onDispose { audioPlayer.close() }
+    }
     val libraryMaintenance = remember { LibraryMaintenanceService(libraryIndex) }
     val crossPlatformMatcher = remember { CrossPlatformMatcher(libraryMaintenance) }
     val folderWatcher = remember {
@@ -318,6 +326,7 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
                 onUpdateSettings = updateSettings,
                 sessionRevision = sessionRevision,
                 files = files,
+                audioPlayer = audioPlayer,
                 conversionManager = conversionManager,
                 downloadManager = downloadManager,
                 subscriptionManager = subscriptionManager,
@@ -411,6 +420,7 @@ fun MainScreen(
     onUpdateSettings: SettingsUpdate,
     sessionRevision: Int,
     files: SnapshotStateList<FileItem>,
+    audioPlayer: AudioPlayerService,
     conversionManager: ConversionTaskManager,
     downloadManager: DownloadTaskManager,
     subscriptionManager: SubscriptionManager,
@@ -445,6 +455,7 @@ fun MainScreen(
     val t = cleanTokens()
     val conversionTasks by conversionManager.tasks.collectAsState()
     val downloadTasks by downloadManager.tasks.collectAsState()
+    val playerState by audioPlayer.state.collectAsState()
     val activeDownloads = downloadTasks.count { it.state !in setOf(DownloadTaskState.COMPLETED, DownloadTaskState.FAILED, DownloadTaskState.CANCELLED, DownloadTaskState.SKIPPED, DownloadTaskState.PAUSED) }
     val fileTaskIds = files.mapNotNull { it.taskId }.toSet()
     val trackedConversionTasks = conversionTasks.filter { it.id in fileTaskIds }
@@ -673,6 +684,7 @@ fun MainScreen(
                 DiscoverPage(
                     settings = settings,
                     downloadManager = downloadManager,
+                    audioPlayer = audioPlayer,
                     crossPlatformMatcher = crossPlatformMatcher,
                     library = library,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -685,6 +697,27 @@ fun MainScreen(
                     conversionManager = conversionManager,
                     downloadManager = downloadManager,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            }
+            if (playerState.current != null) {
+                PlayerBar(
+                    player = audioPlayer,
+                    onDownload = { track ->
+                        val provider = musicunlock.online.ProviderRegistry.find(track.platformId)
+                        if (provider != null) {
+                            downloadManager.enqueue(
+                                provider = provider,
+                                song = track.song,
+                                outputDir = File(settings.outputDir),
+                                preferences = settings.toOnlineDownloadPreferences().copy(
+                                    targetFormat = TranscodeFormat.MP3,
+                                    forceMp3 = true,
+                                    mp3BitrateKbps = settings.bitrateKbps,
+                                ),
+                                playlistName = "播放器下载",
+                            )
+                        }
+                    },
                 )
             }
         }

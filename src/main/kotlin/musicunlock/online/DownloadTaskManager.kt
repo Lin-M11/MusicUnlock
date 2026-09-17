@@ -231,7 +231,7 @@ class DownloadTaskManager(
                 if (activeJobs.containsKey(task.id)) continue
                 val job = scope.launch { execute(task.id) }
                 activeJobs[task.id] = job
-                job.invokeOnCompletion { activeJobs.remove(task.id); pump() }
+                job.invokeOnCompletion { activeJobs.remove(task.id, job); pump() }
             }
         }
     }
