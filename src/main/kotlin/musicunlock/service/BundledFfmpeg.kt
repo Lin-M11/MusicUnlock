@@ -13,6 +13,9 @@ object BundledFfmpeg {
     @Volatile
     private var resolved: File? = null
 
+    @Volatile
+    private var failureMessage: String? = null
+
     fun locate(): String? {
         resolved?.takeIf(::isUsable)?.let { return it.absolutePath }
         return synchronized(this) {
@@ -21,6 +24,8 @@ object BundledFfmpeg {
                 ?: findSystemFfmpeg()
         }
     }
+
+    internal fun lastFailure(): String? = failureMessage
 
     private fun findSystemFfmpeg(): String? {
         val executable = if (isWindows()) "ffmpeg.exe" else "ffmpeg"
@@ -45,12 +50,15 @@ object BundledFfmpeg {
             val output = process.inputStream.bufferedReader().readText()
             process.waitFor()
             val ok = process.exitValue() == 0
-            if (!ok) println("内置 ffmpeg 运行时自检失败：${output.trim().take(800)}")
+            if (!ok) {
+                failureMessage = output.trim().take(1200)
+                println("内置 ffmpeg 运行时自检失败：$failureMessage")
+            }
             ok
         } finally {
             if (process.isAlive) process.destroyForcibly()
         }
-    }.getOrDefault(false)
+    }.onFailure { failureMessage = it.message }.getOrDefault(false)
 
     private fun resolveBundled(): File? {
         val platform = platformName() ?: return null

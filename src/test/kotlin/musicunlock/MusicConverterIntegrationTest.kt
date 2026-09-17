@@ -2,6 +2,7 @@ package musicunlock
 
 import kotlinx.coroutines.runBlocking
 import musicunlock.service.AudioTranscoder
+import musicunlock.service.BundledFfmpeg
 import musicunlock.service.ConversionCancelledException
 import musicunlock.service.MusicConverter
 import musicunlock.service.TranscodeFormat
@@ -132,7 +133,7 @@ class MusicConverterIntegrationTest {
     @Test
     fun convertMflacToMp3EndToEnd() {
         val ffmpeg = AudioTranscoder.locateFfmpeg()
-        assertTrue(ffmpeg != null, "应用应能定位可用的 ffmpeg")
+        assertTrue(ffmpeg != null, "应用应能定位可用的 ffmpeg：${BundledFfmpeg.lastFailure().orEmpty()}")
         val normalizedPath = ffmpeg.orEmpty().replace('\\', '/')
         assertTrue(java.io.File(normalizedPath).canExecute(), "ffmpeg 应可执行")
         val raw = load("mflac_map_raw.bin")

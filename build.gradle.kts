@@ -70,6 +70,9 @@ kotlin {
 
 tasks.test {
     useJUnit()
+    testLogging {
+        showStandardStreams = true
+    }
 }
 
 compose.desktop {
