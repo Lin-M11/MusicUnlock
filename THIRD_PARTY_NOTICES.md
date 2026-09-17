@@ -8,6 +8,7 @@
 | KWM 解密 | [unlock-music](https://github.com/kevinstoy/unlock-music)(MengYX) | MIT |
 | KGM/VPR 解密 | [MyKgmWasm](https://github.com/huangbao/MyKgmWasm)(huangbao) + unlock-music | MIT |
 | NCM 解密 | 公开格式规范 + unlock-music 算法参考 | MIT |
+| 酷狗请求签名/设备注册 | [KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi)(MakcRe) | MIT |
 | TEA 算法 | golang.org/x/crypto/tea(经 unlock-music tea.ts 移植) | BSD-3-Clause |
 
 ### MIT License (unlock-music / MyKgmWasm)
@@ -16,6 +17,33 @@
 MIT License
 
 Copyright (c) 2019-2023 MengYX
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+
+### MIT License (KuGouMusicApi)
+
+```
+MIT License
+
+Copyright (c) 2023 MakcRe
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
