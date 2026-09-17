@@ -1,5 +1,9 @@
 package musicunlock.ncm
 
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import musicunlock.online.MusicLyrics
 import java.math.BigInteger
 import java.net.CookieManager
 import java.net.CookiePolicy
@@ -271,6 +275,48 @@ object NeteaseApi {
         return parseSongDetails(raw)
     }
 
+    fun songDetail(id: Long): NeteaseSong? = songDetails(listOf(id)).firstOrNull()
+
+    fun playlistDetail(id: Long): NeteasePlaylist? =
+        parsePlaylistDetail(get("$BASE/api/v6/playlist/detail?id=$id"))
+
+    /** 官方搜索接口；type: 1 歌曲、10 专辑、100 歌手、1000 歌单。 */
+    fun search(query: String, type: Int, limit: Int): JsonObject {
+        val raw = get("$BASE/api/search/get/web?s=${encode(query)}&type=$type&limit=${limit.coerceIn(1, 100)}&offset=0")
+        return runCatching { JsonParser.parseString(raw).asJsonObject }
+            .getOrElse { throw IllegalStateException("网易云搜索失败") }
+    }
+
+    fun album(id: Long): Pair<NeteasePlaylist, List<NeteaseSong>>? {
+        val root = runCatching { JsonParser.parseString(get("$BASE/api/v1/album/$id")).asJsonObject }.getOrNull() ?: return null
+        val album = root.getAsJsonObject("album") ?: return null
+        val name = album.string("name") ?: return null
+        val songs = album.getAsJsonArray("songs")?.mapNotNull(::parseSearchSong).orEmpty()
+        return NeteasePlaylist(
+            id = id,
+            name = name,
+            coverImgUrl = album.string("picUrl"),
+            trackCount = songs.size,
+        ) to songs
+    }
+
+    fun artistSongs(artistId: Long, limit: Int): List<NeteaseSong> {
+        val root = runCatching { JsonParser.parseString(get("$BASE/api/v1/artist/$artistId")).asJsonObject }.getOrNull() ?: return emptyList()
+        return root.getAsJsonArray("hotSongs")
+            ?.take(limit.coerceAtLeast(1))
+            ?.mapNotNull(::parseSearchSong)
+            .orEmpty()
+    }
+
+    fun lyrics(songId: Long): MusicLyrics? {
+        val root = runCatching { JsonParser.parseString(get("$BASE/api/song/lyric?id=$songId&lv=1&kv=1&tv=1")).asJsonObject }.getOrNull() ?: return null
+        val original = root.getAsJsonObject("lrc")?.string("lyric").orEmpty()
+        val translated = root.getAsJsonObject("tlyric")?.string("lyric")
+        val romanized = root.getAsJsonObject("romalrc")?.string("lyric")
+        if (original.isBlank() && translated.isNullOrBlank() && romanized.isNullOrBlank()) return null
+        return MusicLyrics(original, translated, romanized)
+    }
+
     // ============================================================
     //  播放地址
     // ============================================================
@@ -374,6 +420,18 @@ object NeteaseApi {
         return playlists to resp.more
     }
 
+    internal fun parsePlaylistDetail(raw: String): NeteasePlaylist? {
+        val resp = NeteaseJson.gson.fromJson(raw, RawPlaylistDetailResponse::class.java)
+        if (resp.code != 200) throw IllegalStateException("获取歌单详情失败（code=${resp.code}）")
+        val playlist = resp.playlist ?: return null
+        return NeteasePlaylist(
+            id = playlist.id,
+            name = playlist.name.orEmpty(),
+            coverImgUrl = playlist.coverImgUrl?.takeIf(String::isNotBlank),
+            trackCount = playlist.trackCount,
+        )
+    }
+
     internal fun parsePlaylistTrackIds(raw: String): List<Long> {
         val resp = NeteaseJson.gson.fromJson(raw, RawPlaylistDetailResponse::class.java)
         if (resp.code != 200) {
@@ -394,6 +452,12 @@ object NeteaseApi {
                 artists = song.ar.orEmpty().mapNotNull { it.name?.takeIf(String::isNotBlank) },
                 albumName = song.al?.name?.takeIf { it.isNotBlank() },
                 albumPicUrl = song.al?.picUrl?.takeIf { it.isNotBlank() },
+                durationMillis = song.dt.takeIf { it > 0L }?.toInt(),
+                trackNumber = song.no.takeIf { it > 0 },
+                discNumber = song.cd?.toIntOrNull()?.takeIf { it > 0 },
+                year = (song.publishTime.takeIf { it > 0L } ?: song.al?.publishTime ?: 0L)
+                    .takeIf { it > 0L }
+                    ?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).year },
             )
         }
     }
@@ -412,6 +476,37 @@ object NeteaseApi {
             isTrial = item.freeTrialInfo != null,
         )
     }
+
+    internal fun parseSearchSong(element: JsonElement): NeteaseSong? = runCatching {
+        val song = element.asJsonObject
+        val id = song.long("id") ?: return@runCatching null
+        val name = song.string("name") ?: return@runCatching null
+        val artists = song.getAsJsonArray("ar")?.mapNotNull { it.asJsonObject.string("name") }
+            ?: song.getAsJsonArray("artists")?.mapNotNull { it.asJsonObject.string("name") }
+            ?: emptyList()
+        val album = song.getAsJsonObject("al") ?: song.getAsJsonObject("album")
+        NeteaseSong(
+            id = id,
+            name = name,
+            artists = artists,
+            albumName = album?.string("name"),
+            albumPicUrl = album?.string("picUrl"),
+            durationMillis = (song.long("dt") ?: song.long("duration"))?.toInt(),
+            trackNumber = song.int("no")?.takeIf { it > 0 },
+            year = song.long("publishTime")?.takeIf { it > 0L }?.let {
+                java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).year
+            },
+        )
+    }.getOrNull()
+
+    private fun JsonObject.string(name: String): String? =
+        get(name)?.takeIf { it.isJsonPrimitive }?.asString
+
+    private fun JsonObject.long(name: String): Long? =
+        get(name)?.takeIf { it.isJsonPrimitive }?.let { runCatching { it.asLong }.getOrNull() }
+
+    private fun JsonObject.int(name: String): Int? =
+        get(name)?.takeIf { it.isJsonPrimitive }?.let { runCatching { it.asInt }.getOrNull() }
 
     // ============================================================
     //  HTTP 工具

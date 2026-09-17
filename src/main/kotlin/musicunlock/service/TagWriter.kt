@@ -1,6 +1,8 @@
 package musicunlock.service
 
 import musicunlock.core.MusicResult
+import musicunlock.online.MusicLyrics
+import musicunlock.settings.LyricsMode
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.audio.flac.metadatablock.MetadataBlockDataPicture
 import org.jaudiotagger.tag.FieldKey
@@ -10,6 +12,25 @@ import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.File
 import javax.imageio.ImageIO
+
+/** 一次写入的完整标签集合。 */
+data class AudioTagData(
+    val title: String? = null,
+    val artist: String? = null,
+    val album: String? = null,
+    val albumArtist: String? = null,
+    val trackNumber: Int? = null,
+    val discNumber: Int? = null,
+    val year: Int? = null,
+    val genre: String? = null,
+    val composer: String? = null,
+    val isrc: String? = null,
+    val lyrics: String? = null,
+    val cover: ByteArray? = null,
+    val platform: String? = null,
+    val sourceSongId: String? = null,
+    val quality: String? = null,
+)
 
 /**
  * 写回音频元数据与封面(jaudiotagger)。
@@ -28,37 +49,54 @@ object TagWriter {
         )
     }
 
-    /** 将指定标签写回音频文件;成功返回 true,失败返回 false(不抛异常)。 */
+    /** 兼容旧调用入口。 */
     fun embedTags(
         audioFile: File,
         title: String?,
         artist: String?,
         album: String?,
         cover: ByteArray?,
-    ): Boolean {
+    ): Boolean = embed(audioFile, AudioTagData(title = title, artist = artist, album = album, cover = cover))
+
+    /** 将完整标签写回音频文件;成功返回 true,失败返回 false(不抛异常)。 */
+    fun embed(audioFile: File, tags: AudioTagData): Boolean {
         return try {
             val audio = AudioFileIO.read(audioFile)
             val tag = audio.tag ?: audio.createDefaultTag()
 
-            album?.takeIf { it.isNotBlank() }?.let { tag.setField(FieldKey.ALBUM, it) }
-            title?.takeIf { it.isNotBlank() }?.let { tag.setField(FieldKey.TITLE, it) }
-            artist?.takeIf { it.isNotBlank() }?.let { tag.setField(FieldKey.ARTIST, it) }
+            set(tag, FieldKey.ALBUM, tags.album)
+            set(tag, FieldKey.TITLE, tags.title)
+            set(tag, FieldKey.ARTIST, tags.artist)
+            set(tag, FieldKey.ALBUM_ARTIST, tags.albumArtist ?: tags.artist)
+            set(tag, FieldKey.TRACK, tags.trackNumber?.toString())
+            set(tag, FieldKey.DISC_NO, tags.discNumber?.toString())
+            set(tag, FieldKey.YEAR, tags.year?.toString())
+            set(tag, FieldKey.GENRE, tags.genre)
+            set(tag, FieldKey.COMPOSER, tags.composer)
+            set(tag, FieldKey.ISRC, tags.isrc)
+            set(tag, FieldKey.LYRICS, tags.lyrics)
+            set(tag, FieldKey.QUALITY, tags.quality)
+            if (!tags.platform.isNullOrBlank() || !tags.sourceSongId.isNullOrBlank()) {
+                set(tag, FieldKey.CUSTOM1, listOfNotNull(tags.platform, tags.sourceSongId).joinToString(":"))
+            }
 
-            cover?.takeIf { it.isNotEmpty() }?.let { bytes ->
-                val image = ImageIO.read(ByteArrayInputStream(bytes))
-                if (image != null) {
-                    val picture = MetadataBlockDataPicture(
-                        bytes,
-                        0,
-                        mimeTypeOf(bytes),
-                        "",
-                        image.width,
-                        image.height,
-                        if (image.colorModel.hasAlpha()) 32 else 24,
-                        0,
-                    )
-                    val artwork = ArtworkFactory.createArtworkFromMetadataBlockDataPicture(picture)
-                    tag.setField(tag.createField(artwork))
+            tags.cover?.takeIf { it.isNotEmpty() }?.let { bytes ->
+                runCatching {
+                    val image = ImageIO.read(ByteArrayInputStream(bytes))
+                    if (image != null) {
+                        val picture = MetadataBlockDataPicture(
+                            bytes,
+                            0,
+                            mimeTypeOf(bytes),
+                            "",
+                            image.width,
+                            image.height,
+                            if (image.colorModel.hasAlpha()) 32 else 24,
+                            0,
+                        )
+                        val artwork = ArtworkFactory.createArtworkFromMetadataBlockDataPicture(picture)
+                        tag.setField(tag.createField(artwork))
+                    }
                 }
             }
 
@@ -70,14 +108,65 @@ object TagWriter {
         }
     }
 
-    private fun mimeTypeOf(albumImage: ByteArray): String {
-        // PNG 文件头
-        val png = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
-        if (albumImage.size > 8) {
-            for (i in 0 until 8) {
-                if (albumImage[i] != png[i]) return "image/jpg"
-            }
+    fun writeLyrics(audioFile: File, lyrics: MusicLyrics?, mode: LyricsMode): Boolean {
+        if (lyrics == null || lyrics.isEmpty || mode == LyricsMode.OFF) return false
+        var ok = true
+        if (mode == LyricsMode.SIDECAR || mode == LyricsMode.BOTH) {
+            ok = ok && runCatching { writeLyricsFile(audioFile, lyrics) }.getOrDefault(false)
         }
-        return "image/png"
+        if (mode == LyricsMode.EMBED || mode == LyricsMode.BOTH) {
+            ok = ok && embed(audioFile, AudioTagData(lyrics = mergedLyrics(lyrics)))
+        }
+        return ok
+    }
+
+    fun writeLyricsFile(audioFile: File, lyrics: MusicLyrics): Boolean = runCatching {
+        val lrc = File(audioFile.parentFile, "${audioFile.nameWithoutExtension}.lrc")
+        lrc.writeText(mergedLyrics(lyrics))
+        true
+    }.getOrDefault(false)
+
+    fun writeCoverSidecar(audioFile: File, cover: ByteArray?): Boolean = runCatching {
+        if (cover == null || cover.isEmpty()) return false
+        val target = File(audioFile.parentFile, "cover${coverExtension(cover)}")
+        target.writeBytes(cover)
+        true
+    }.getOrDefault(false)
+
+    fun mergedLyrics(lyrics: MusicLyrics): String = buildString {
+        if (lyrics.original.isNotBlank()) appendLine(lyrics.original.trim())
+        if (!lyrics.translated.isNullOrBlank()) {
+            if (isNotEmpty()) appendLine()
+            appendLine("// 翻译")
+            appendLine(lyrics.translated.trim())
+        }
+        if (!lyrics.romanized.isNullOrBlank()) {
+            if (isNotEmpty()) appendLine()
+            appendLine("// 音译")
+            appendLine(lyrics.romanized.trim())
+        }
+    }.trim()
+
+    private fun set(tag: Tag, key: FieldKey, value: String?) {
+        if (value.isNullOrBlank()) return
+        runCatching { tag.setField(key, value) }
+    }
+
+    private fun mimeTypeOf(albumImage: ByteArray): String = when {
+        albumImage.size >= 8 && albumImage[0] == 0x89.toByte() && albumImage[1] == 0x50.toByte() -> "image/png"
+        albumImage.size >= 3 && albumImage[0] == 0xFF.toByte() && albumImage[1] == 0xD8.toByte() -> "image/jpeg"
+        else -> mimeType(albumImage)
+    }
+
+    private fun coverExtension(bytes: ByteArray): String = when {
+        bytes.size >= 8 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() -> ".png"
+        bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() -> ".jpg"
+        else -> ".img"
+    }
+
+    private fun mimeType(bytes: ByteArray): String = when {
+        bytes.size >= 8 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() -> "image/png"
+        bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() -> "image/jpeg"
+        else -> "application/octet-stream"
     }
 }

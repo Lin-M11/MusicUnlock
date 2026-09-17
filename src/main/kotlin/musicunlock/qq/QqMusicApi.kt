@@ -4,6 +4,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import musicunlock.online.MusicLyrics
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
@@ -382,8 +383,9 @@ object QqMusicApi {
     /** 按音质请求播放地址；返回 null 表示该音质不可用。 */
     fun songUrl(song: QqSong, quality: Int): QqSongUrlResult? {
         val cred = credential ?: return null
-        val prefix = if (quality >= 320) "M800" else "M500"
-        val filename = "$prefix${song.mid}${song.mid}.mp3"
+        val mediaMid = song.mediaMid ?: song.mid
+        val (prefix, extension) = if (quality >= 999) "F000" to "flac" else if (quality >= 320) "M800" to "mp3" else "M500" to "mp3"
+        val filename = "$prefix$mediaMid$mediaMid.$extension"
         val param = linkedMapOf<String, Any?>(
             "filename" to arrayOf(filename),
             "guid" to guid(),
@@ -408,7 +410,137 @@ object QqMusicApi {
             ),
         )
         val raw = postMusicu(body, cred)
-        return parseSongUrl(raw)
+        return parseSongUrl(raw, quality)
+    }
+
+    fun lyrics(song: QqSong): MusicLyrics? {
+        val query = buildQuery("songmid" to song.mid, "format" to "json", "nobase64" to 1)
+        val resp = getRaw(
+            "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?$query",
+            mapOf("Referer" to "https://y.qq.com/", "Cookie" to cookieHeader()),
+        )
+        if (resp.status !in 200..299) return null
+        val text = String(resp.body, Charsets.UTF_8)
+        val jsonText = text.substringAfter('(', "").substringBeforeLast(')', "")
+            .takeIf { it.isNotBlank() }
+            ?: text
+        val root = runCatching { parseObject(jsonText) }.getOrNull() ?: return null
+        val original = root.str("lyric").orEmpty()
+        val translated = root.str("trans")
+        if (original.isBlank() && translated.isNullOrBlank()) return null
+        return MusicLyrics(original, translated)
+    }
+
+    fun search(query: String, limit: Int): List<QqSearchResult> {
+        val body = moduleBody(
+            "music.search.SearchCgiService",
+            "DoSearchForQQMusicDesktop",
+            linkedMapOf(
+                "search_type" to 0,
+                "query" to query,
+                "page_num" to 1,
+                "num_per_page" to limit.coerceIn(1, 50),
+            ),
+        )
+        val cred = credential
+        val raw = if (cred != null) {
+            postMusicu(body, cred)
+        } else {
+            val response = postRaw(
+                MUSICU,
+                body,
+                mapOf(
+                    "Content-Type" to "application/json;charset=UTF-8",
+                    "Referer" to "https://y.qq.com/",
+                    "User-Agent" to USER_AGENT,
+                ),
+            )
+            checkStatus(response, "QQ 音乐搜索失败")
+            String(response.body, Charsets.UTF_8)
+        }
+        return parseSearch(raw, limit)
+    }
+
+    fun songDetail(mid: String): QqSong? {
+        if (mid.isBlank()) return null
+        val found = search(mid, 10)
+        return found.firstOrNull { it.kind == musicunlock.online.SearchResultKind.SONG && it.song?.mid == mid }?.song
+            ?: found.firstOrNull { it.kind == musicunlock.online.SearchResultKind.SONG }?.song
+    }
+
+    fun publicPlaylist(id: String): QqPlaylist? {
+        val query = buildQuery(
+            "type" to 1,
+            "json" to 1,
+            "utf8" to 1,
+            "onlysong" to 0,
+            "disstid" to id,
+            "format" to "json",
+        )
+        val root = publicJson("https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?$query") ?: return null
+        val cdlist = root.arr("cdlist") ?: return null
+        val data = if (cdlist.size() > 0) cdlist.get(0).asJsonObjectOrNull() else null
+        if (data == null) return null
+        return QqPlaylist(
+            id = id.toLongOrNull() ?: 0L,
+            dirId = 0L,
+            name = data.str("dissname").orEmpty().ifBlank { "QQ 歌单" },
+            coverUrl = data.str("logo"),
+            trackCount = data.int("songnum"),
+        )
+    }
+
+    fun publicPlaylistSongs(id: String): List<QqSong> {
+        val query = buildQuery(
+            "type" to 1,
+            "json" to 1,
+            "utf8" to 1,
+            "onlysong" to 0,
+            "disstid" to id,
+            "format" to "json",
+        )
+        val root = publicJson("https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?$query") ?: return emptyList()
+        val list = root.arr("cdlist") ?: return emptyList()
+        if (list.size() == 0) return emptyList()
+        val data = list.get(0).asJsonObject
+        return data.arr("songlist")?.mapNotNull { item ->
+            val o = item.asJsonObjectOrNull() ?: return@mapNotNull null
+            parseLegacySong(o, o.obj("album")?.str("mid"))
+        }.orEmpty()
+    }
+
+    fun album(albumMid: String): Pair<QqPlaylist, List<QqSong>>? {
+        val query = buildQuery("albummid" to albumMid, "format" to "json")
+        val root = publicJson("https://c.y.qq.com/v8/fcg-bin/fcg_v8_album_info_cp.fcg?$query") ?: return null
+        val data = root.obj("data") ?: return null
+        val songs = data.arr("list")?.mapNotNull { item ->
+            val o = item.asJsonObjectOrNull() ?: return@mapNotNull null
+            parseLegacySong(o, albumMid)
+        }.orEmpty()
+        val playlist = QqPlaylist(
+            id = albumMid.hashCode().toLong(),
+            dirId = 0L,
+            name = data.str("name").orEmpty().ifBlank { "QQ 专辑" },
+            coverUrl = data.str("pic"),
+            trackCount = songs.size,
+        )
+        return playlist to songs
+    }
+
+    fun artistSongs(artistMid: String, limit: Int): List<QqSong> {
+        val query = buildQuery(
+            "singermid" to artistMid,
+            "order" to "listen",
+            "begin" to 0,
+            "num" to limit.coerceIn(1, 100),
+            "songstatus" to 1,
+            "format" to "json",
+        )
+        val root = publicJson("https://c.y.qq.com/v8/fcg-bin/fcg_v8_singer_track_cp.fcg?$query") ?: return emptyList()
+        return root.obj("data")?.arr("list")?.mapNotNull { item ->
+            val o = item.asJsonObjectOrNull() ?: return@mapNotNull null
+            parseLegacySong(o, o.obj("album")?.str("mid"))
+        }.orEmpty()
     }
 
     /** 下载 URL 到本地文件（覆盖已存在文件）。 */
@@ -526,7 +658,7 @@ object QqMusicApi {
     }
 
     /** 解析 vkey 响应；无 purl 时 reason 给出明确原因。 */
-    internal fun parseSongUrl(raw: String): QqSongUrlResult {
+    internal fun parseSongUrl(raw: String, quality: Int = 128): QqSongUrlResult {
         val root = parseObject(raw)
         val module = root.module(VKEY_MODULE)
             ?: return QqSongUrlResult(null, "获取播放地址失败：未返回数据")
@@ -537,9 +669,9 @@ object QqMusicApi {
             ?: return QqSongUrlResult(null, "获取播放地址失败：接口未返回播放信息")
         val purl = info.str("purl")?.takeIf { it.isNotBlank() }
         if (purl != null) {
-            return QqSongUrlResult("https://isure.stream.qqmusic.qq.com/$purl", null)
+            return QqSongUrlResult("https://isure.stream.qqmusic.qq.com/$purl", null, quality)
         }
-        return QqSongUrlResult(null, unavailableReason(info))
+        return QqSongUrlResult(null, unavailableReason(info), quality)
     }
 
     internal fun parseHomepageProfile(raw: String): QqProfileParsed? {
@@ -563,6 +695,95 @@ object QqMusicApi {
         val favoriteCount: Int?,
     )
 
+    private fun parseSearch(raw: String, limit: Int): List<QqSearchResult> {
+        val root = runCatching { parseObject(raw) }.getOrNull() ?: return emptyList()
+        val module = root.module("music.search.SearchCgiService") ?: root.obj("data") ?: root
+        val body = module.obj("data")?.obj("body") ?: module.obj("body") ?: module
+        val out = mutableListOf<QqSearchResult>()
+
+        body.obj("song")?.arr("list")?.forEach { item ->
+            val o = item.asJsonObjectOrNull() ?: return@forEach
+            val song = parseSongObject(o) ?: parseLegacySong(o, o.obj("album")?.str("mid"))
+            if (song != null) {
+                out += QqSearchResult(
+                    kind = musicunlock.online.SearchResultKind.SONG,
+                    id = song.mid,
+                    title = song.name,
+                    subtitle = song.artistText,
+                    coverUrl = song.albumMid?.let { "https://y.gtimg.cn/music/photo_new/T002R300x300M000$it.jpg" },
+                    song = song,
+                )
+            }
+        }
+        body.obj("playlist")?.arr("list")?.forEach { item ->
+            val o = item.asJsonObjectOrNull() ?: return@forEach
+            val id = o.lng("dissid").takeIf { it > 0L } ?: o.lng("content_id").takeIf { it > 0L } ?: return@forEach
+            val name = o.str("dissname") ?: o.str("title") ?: return@forEach
+            out += QqSearchResult(
+                kind = musicunlock.online.SearchResultKind.PLAYLIST,
+                id = id.toString(),
+                title = name,
+                subtitle = "${o.int("songnum")} 首",
+                coverUrl = o.str("imgurl") ?: o.str("cover"),
+                playlist = QqPlaylist(id, 0L, name, o.str("imgurl") ?: o.str("cover"), o.int("songnum")),
+            )
+        }
+        body.obj("album")?.arr("list")?.forEach { item ->
+            val o = item.asJsonObjectOrNull() ?: return@forEach
+            val mid = o.str("albumMID") ?: o.str("album_mid") ?: return@forEach
+            val title = o.str("albumName") ?: o.str("album_name") ?: return@forEach
+            out += QqSearchResult(
+                kind = musicunlock.online.SearchResultKind.ALBUM,
+                id = mid,
+                title = title,
+                subtitle = o.str("singerName").orEmpty(),
+                coverUrl = o.str("albumPic") ?: o.str("pic"),
+            )
+        }
+        body.obj("singer")?.arr("list")?.forEach { item ->
+            val o = item.asJsonObjectOrNull() ?: return@forEach
+            val mid = o.str("singerMID") ?: o.str("singer_mid") ?: return@forEach
+            val title = o.str("singerName") ?: o.str("singer_name") ?: return@forEach
+            out += QqSearchResult(
+                kind = musicunlock.online.SearchResultKind.ARTIST,
+                id = mid,
+                title = title,
+                subtitle = "歌手",
+                coverUrl = o.str("singerPic") ?: o.str("pic"),
+            )
+        }
+        return out.distinctBy { "${it.kind}:${it.id}" }.take(limit)
+    }
+
+    private fun parseLegacySong(o: JsonObject, albumMid: String?): QqSong? {
+        val mid = o.str("songmid") ?: o.str("mid") ?: return null
+        val name = o.str("songname") ?: o.str("name") ?: o.str("title") ?: return null
+        val singers = o.arr("singer")?.mapNotNull { singer ->
+            val singerObject = singer.asJsonObjectOrNull() ?: return@mapNotNull null
+            singerObject.str("name")
+        }.orEmpty()
+        val album = o.str("albumname") ?: o.str("album_name") ?: o.obj("album")?.str("name")
+        return QqSong(
+            mid = mid,
+            mediaMid = o.str("media_mid") ?: o.obj("file")?.str("media_mid"),
+            name = name,
+            artists = singers,
+            albumName = album,
+            albumMid = albumMid ?: o.str("albummid") ?: o.str("album_mid"),
+            size320 = o.lng("size320"),
+            size128 = o.lng("size128"),
+            durationSeconds = o.lng("interval").takeIf { it > 0L }?.toInt(),
+            trackNumber = o.int("index").takeIf { it > 0 },
+            year = o.str("time_public")?.take(4)?.toIntOrNull(),
+        )
+    }
+
+    private fun publicJson(url: String): JsonObject? = runCatching {
+        val response = getRaw(url, mapOf("Referer" to "https://y.qq.com/", "Cookie" to cookieHeader()))
+        if (response.status !in 200..299) return@runCatching null
+        JsonParser.parseString(String(response.body, Charsets.UTF_8)).asJsonObject
+    }.getOrNull()
+
     internal fun parseSongObject(o: JsonObject): QqSong? {
         val mid = o.str("mid")?.takeIf { it.isNotBlank() } ?: return null
         val name = o.str("name") ?: o.str("title")
@@ -580,6 +801,12 @@ object QqMusicApi {
             albumMid = album?.str("mid")?.takeIf { it.isNotBlank() },
             size320 = file?.lng("size_320mp3") ?: 0,
             size128 = file?.lng("size_128mp3") ?: 0,
+            durationSeconds = o.lng("interval").takeIf { it > 0L }?.toInt()
+                ?: o.obj("track_info")?.lng("interval")?.takeIf { it > 0L }?.toInt(),
+            trackNumber = o.int("index").takeIf { it > 0 },
+            discNumber = o.int("disc").takeIf { it > 0 },
+            year = o.str("time_public")?.take(4)?.toIntOrNull()
+                ?: album?.str("time_public")?.take(4)?.toIntOrNull(),
         )
     }
 

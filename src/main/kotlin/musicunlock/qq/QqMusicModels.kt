@@ -37,6 +37,10 @@ class QqSong(
     /** 各档 MP3 在官方接口中声明的体积；0 表示该档不存在。 */
     val size320: Long,
     val size128: Long,
+    val durationSeconds: Int? = null,
+    val trackNumber: Int? = null,
+    val discNumber: Int? = null,
+    val year: Int? = null,
 ) {
     val artistText: String get() = artists.joinToString(" / ")
 }
@@ -45,6 +49,7 @@ class QqSong(
 class QqSongUrlResult(
     val url: String?,
     val reason: String?,
+    val quality: Int = 128,
 ) {
     val ok: Boolean get() = url != null
 }
@@ -56,6 +61,16 @@ enum class QqLoginState { WAIT, SCANNED, EXPIRED, SUCCESS, ERROR }
 class QqQrResult(val state: QqLoginState, val message: String?)
 
 /** 下载单曲的结果。 */
+class QqSearchResult(
+    val kind: musicunlock.online.SearchResultKind,
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val coverUrl: String? = null,
+    val song: QqSong? = null,
+    val playlist: QqPlaylist? = null,
+)
+
 class QqDownloadOutcome(
     val ok: Boolean,
     val file: java.io.File?,

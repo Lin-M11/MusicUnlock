@@ -55,6 +55,10 @@ internal class RawPlaylistDetailResponse {
 }
 
 internal class RawPlaylistDetail {
+    var id: Long = 0
+    var name: String? = null
+    var coverImgUrl: String? = null
+    var trackCount: Int = 0
     var trackIds: List<RawTrackId>? = null
 }
 
@@ -72,6 +76,17 @@ internal class RawSong {
     var name: String? = null
     var ar: List<RawArtist>? = null
     var al: RawAlbum? = null
+    var dt: Long = 0
+    var no: Int = 0
+    var cd: String? = null
+    var publishTime: Long = 0
+    var fee: Int = 0
+    var privilege: RawPrivilege? = null
+}
+
+internal class RawPrivilege {
+    var fee: Int = 0
+    var maxBrLevel: String? = null
 }
 
 internal class RawArtist {
@@ -79,8 +94,10 @@ internal class RawArtist {
 }
 
 internal class RawAlbum {
+    var id: Long = 0
     var name: String? = null
     var picUrl: String? = null
+    var publishTime: Long = 0
 }
 
 internal class RawUrlResponse {
@@ -127,6 +144,10 @@ class NeteaseSong(
     val artists: List<String>,
     val albumName: String?,
     val albumPicUrl: String?,
+    val durationMillis: Int? = null,
+    val trackNumber: Int? = null,
+    val discNumber: Int? = null,
+    val year: Int? = null,
 ) {
     val artistText: String get() = artists.joinToString(" / ")
 }
