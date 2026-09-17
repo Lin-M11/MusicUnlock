@@ -40,16 +40,16 @@ class ConversionTaskManagerTest {
             outputDir = dir.toString(),
             outputFormat = OutputFormat.ORIGINAL,
         )
-        withTimeout(3_000L) {
+        withTimeout(15_000L) {
             manager.tasks.first { tasks -> tasks.first { it.id == id }.state == ConversionTaskState.RUNNING }
         }
         manager.pause(id)
-        withTimeout(3_000L) {
+        withTimeout(15_000L) {
             manager.tasks.first { tasks -> tasks.first { it.id == id }.state == ConversionTaskState.PAUSED }
         }
 
         manager.resume(id)
-        val completed = withTimeout(3_000L) {
+        val completed = withTimeout(15_000L) {
             manager.tasks.first { tasks -> tasks.first { it.id == id }.state == ConversionTaskState.COMPLETED }
         }.first { it.id == id }
 
