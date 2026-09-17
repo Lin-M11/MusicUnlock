@@ -32,28 +32,38 @@ class SettingsStoreTest {
                 it.copy(
                     outputDir = "/tmp/music",
                     dedup = true,
+                    skipExisting = false,
                     outputFormat = OutputFormat.MP3,
                     bitrateKbps = 192,
                     windowWidth = 1280,
                     windowHeight = 820,
                     neteaseCookie = "MUSIC_U=netease",
                     qqCookie = "uin=123; qqmusic_key=key",
+                    kugouCookie = "userid=456; token=kugou",
+                    kuwoCookie = "userid=789; sid=kuwo",
                     neteaseAccount = AccountSnapshot("网易用户", "https://example.com/netease.png", "1"),
                     qqAccount = AccountSnapshot("QQ 用户", "https://example.com/qq.png", "123"),
+                    kugouAccount = AccountSnapshot("酷狗用户", null, "456"),
+                    kuwoAccount = AccountSnapshot("酷我用户", null, "789"),
                 )
             }
 
             val reloaded = SettingsRepository(file).load()
             assertEquals("/tmp/music", reloaded.outputDir)
             assertEquals(true, reloaded.dedup)
+            assertEquals(false, reloaded.skipExisting)
             assertEquals(OutputFormat.MP3, reloaded.outputFormat)
             assertEquals(192, reloaded.bitrateKbps)
             assertEquals(1280, reloaded.windowWidth)
             assertEquals(820, reloaded.windowHeight)
             assertEquals("MUSIC_U=netease", reloaded.neteaseCookie)
             assertEquals("uin=123; qqmusic_key=key", reloaded.qqCookie)
+            assertEquals("userid=456; token=kugou", reloaded.kugouCookie)
+            assertEquals("userid=789; sid=kuwo", reloaded.kuwoCookie)
             assertEquals(AccountSnapshot("网易用户", "https://example.com/netease.png", "1"), reloaded.neteaseAccount)
             assertEquals(AccountSnapshot("QQ 用户", "https://example.com/qq.png", "123"), reloaded.qqAccount)
+            assertEquals(AccountSnapshot("酷狗用户", null, "456"), reloaded.kugouAccount)
+            assertEquals(AccountSnapshot("酷我用户", null, "789"), reloaded.kuwoAccount)
         } finally {
             dir.deleteRecursively()
         }
@@ -114,5 +124,33 @@ class SettingsStoreTest {
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `配置文件不保存明文 Cookie`() {
+        val dir = Files.createTempDirectory("musicunlock-secret-settings").toFile()
+        val file = dir.resolve("config")
+        try {
+            val repository = SettingsRepository(file)
+            repository.update { it.copy(neteaseCookie = "MUSIC_U=secret-value") }
+            assertFalse(file.readText().contains("secret-value"))
+            assertEquals("MUSIC_U=secret-value", SettingsRepository(file).load().neteaseCookie)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `可分享设置排除登录信息`() {
+        val settings = AppSettings(
+            neteaseCookie = "secret",
+            qqCookie = "secret-2",
+            neteaseAccount = AccountSnapshot("用户", null, "1"),
+            outputTemplate = "{artist}/{title}",
+        ).let { musicunlock.settings.SettingsPortability.run { it.withoutSecrets() } }
+        assertNull(settings.neteaseCookie)
+        assertNull(settings.qqCookie)
+        assertNull(settings.neteaseAccount)
+        assertEquals("{artist}/{title}", settings.outputTemplate)
     }
 }

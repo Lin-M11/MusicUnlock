@@ -11,8 +11,12 @@ import java.nio.file.attribute.PosixFilePermissions
 /** 配置文件读写；文件固定保存在 ~/.musicunlock/config。 */
 class SettingsRepository internal constructor(
     private val configFile: File = defaultSettingsFile(),
+    private val credentialStore: CredentialStore = FileCredentialStore(
+        File(configFile.parentFile ?: File("."), "credentials"),
+    ),
 ) {
     private val lock = Any()
+    private val secretCache = mutableMapOf<String, String?>()
     private val gson = GsonBuilder()
         .setPrettyPrinting()
         .disableHtmlEscaping()
@@ -36,18 +40,53 @@ class SettingsRepository internal constructor(
     private fun loadFromDisk(): AppSettings {
         if (!configFile.isFile) return AppSettings()
         return runCatching {
-            normalize(gson.fromJson(configFile.readText(), AppSettings::class.java))
+            val parsed = normalize(gson.fromJson(configFile.readText(), AppSettings::class.java))
+            val stored = mapOf(
+                "netease" to credentialStore.get("netease"),
+                "qq" to credentialStore.get("qq"),
+                "kugou" to credentialStore.get("kugou"),
+                "kuwo" to credentialStore.get("kuwo"),
+            )
+            val migrated = parsed.copy(
+                neteaseCookie = stored["netease"] ?: parsed.neteaseCookie,
+                qqCookie = stored["qq"] ?: parsed.qqCookie,
+                kugouCookie = stored["kugou"] ?: parsed.kugouCookie,
+                kuwoCookie = stored["kuwo"] ?: parsed.kuwoCookie,
+            )
+            secretCache.putAll(
+                mapOf(
+                    "netease" to migrated.neteaseCookie,
+                    "qq" to migrated.qqCookie,
+                    "kugou" to migrated.kugouCookie,
+                    "kuwo" to migrated.kuwoCookie,
+                ),
+            )
+            if (migrated.neteaseCookie != stored["netease"]) credentialStore.put("netease", migrated.neteaseCookie)
+            if (migrated.qqCookie != stored["qq"]) credentialStore.put("qq", migrated.qqCookie)
+            if (migrated.kugouCookie != stored["kugou"]) credentialStore.put("kugou", migrated.kugouCookie)
+            if (migrated.kuwoCookie != stored["kuwo"]) credentialStore.put("kuwo", migrated.kuwoCookie)
+            migrated
         }.getOrElse { AppSettings() }
     }
 
     private fun persist(settings: AppSettings) {
+        persistSecret("netease", settings.neteaseCookie)
+        persistSecret("qq", settings.qqCookie)
+        persistSecret("kugou", settings.kugouCookie)
+        persistSecret("kuwo", settings.kuwoCookie)
+        val persistedSettings = settings.copy(
+            neteaseCookie = null,
+            qqCookie = null,
+            kugouCookie = null,
+            kuwoCookie = null,
+        )
         val parent = configFile.parentFile ?: File(".").absoluteFile
         parent.mkdirs()
         setDirectoryPermissions(parent)
 
         val temp = File.createTempFile(configFile.name, ".tmp", parent)
         try {
-            temp.writeText(gson.toJson(settings))
+            temp.writeText(gson.toJson(persistedSettings))
             setFilePermissions(temp)
             val source = temp.toPath()
             val target = configFile.toPath()
@@ -67,6 +106,12 @@ class SettingsRepository internal constructor(
         }
     }
 
+    private fun persistSecret(key: String, value: String?) {
+        if (secretCache.containsKey(key) && secretCache[key] == value) return
+        credentialStore.put(key, value)
+        secretCache[key] = value
+    }
+
     private fun normalize(settings: AppSettings?): AppSettings {
         val source = settings ?: AppSettings()
         return source.copy(
@@ -76,8 +121,30 @@ class SettingsRepository internal constructor(
             windowHeight = source.windowHeight.coerceAtLeast(680),
             neteaseCookie = source.neteaseCookie?.trim()?.takeIf { it.isNotEmpty() },
             qqCookie = source.qqCookie?.trim()?.takeIf { it.isNotEmpty() },
+            kugouCookie = source.kugouCookie?.trim()?.takeIf { it.isNotEmpty() },
+            kuwoCookie = source.kuwoCookie?.trim()?.takeIf { it.isNotEmpty() },
             neteaseAccount = normalizeAccount(source.neteaseAccount),
             qqAccount = normalizeAccount(source.qqAccount),
+            kugouAccount = normalizeAccount(source.kugouAccount),
+            kuwoAccount = normalizeAccount(source.kuwoAccount),
+            downloadConcurrency = source.downloadConcurrency.coerceIn(1, 16),
+            downloadRetryCount = source.downloadRetryCount.coerceIn(0, 20),
+            downloadRetryDelayMillis = source.downloadRetryDelayMillis.coerceIn(100L, 60_000L),
+            downloadSpeedLimitKbps = source.downloadSpeedLimitKbps.coerceIn(0, 1_000_000),
+            downloadTimeoutSeconds = source.downloadTimeoutSeconds.coerceIn(5L, 3_600L),
+            connectTimeoutSeconds = source.connectTimeoutSeconds.coerceIn(3L, 300L),
+            proxyUrl = source.proxyUrl?.trim()?.takeIf { it.isNotEmpty() },
+            outputTemplate = source.outputTemplate.trim().takeIf { it.isNotEmpty() } ?: "{artist}/{album}/{title}",
+            subscriptions = source.subscriptions
+                .filter { it.id.isNotBlank() && it.platform.isNotBlank() && it.playlistId.isNotBlank() }
+                .map {
+                    it.copy(
+                        outputDir = it.outputDir.takeIf(String::isNotBlank) ?: source.outputDir,
+                        syncIntervalMinutes = it.syncIntervalMinutes.coerceIn(5, 10_080),
+                        lastTrackCount = it.lastTrackCount.coerceAtLeast(0),
+                    )
+                },
+            watchFolders = source.watchFolders.map(String::trim).filter(String::isNotEmpty).distinct(),
         )
     }
 
@@ -116,7 +183,7 @@ class SettingsRepository internal constructor(
 
 /** 进程内共享的设置入口。 */
 object SettingsStore {
-    private val repository = SettingsRepository()
+    private val repository = SettingsRepository(credentialStore = PlatformCredentialStore())
 
     fun load(): AppSettings = repository.load()
 
