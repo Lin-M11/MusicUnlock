@@ -8,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
+import java.time.ZonedDateTime
 
 class AutomationRuleEngineTest {
     @Test
@@ -31,6 +32,29 @@ class AutomationRuleEngineTest {
         assertEquals(output.absolutePath, effective.outputDir)
         assertEquals(OutputFormat.FLAC, effective.outputFormat)
         assertEquals("{artist}/{title}", effective.localOutputTemplate)
+    }
+
+    @Test
+    fun `priority pattern schedule and weekdays are honored`() {
+        val input = java.io.File(Files.createTempDirectory("musicunlock-rule-advanced").toString())
+        val file = input.resolve("Live-2026.ncm").also { it.writeBytes(ByteArray(2048)) }
+        val low = AutomationRule("low", "low", inputDir = input.absolutePath, outputDir = input.absolutePath, priority = 1)
+        val high = AutomationRule(
+            id = "high",
+            name = "high",
+            inputDir = input.absolutePath,
+            outputDir = input.absolutePath,
+            priority = 10,
+            fileNamePattern = "*Live*",
+            regexPattern = false,
+            scheduleStartMinute = 8 * 60,
+            scheduleEndMinute = 10 * 60,
+            daysOfWeek = listOf(3),
+        )
+        val settings = AppSettings(automationRules = listOf(low, high))
+        val now = ZonedDateTime.parse("2026-09-16T09:00:00+08:00")
+        assertEquals(high, AutomationRuleEngine.select(settings, file, now))
+        assertTrue(AutomationRuleEngine.simulate(settings, file, now).contains(high))
     }
 
     @Test

@@ -6,9 +6,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import musicunlock.core.Formats
+import musicunlock.automation.AutomationActionService
 import musicunlock.automation.AutomationRuleEngine
 import musicunlock.service.MusicConverter
 import musicunlock.service.ConversionTaskManager
+import musicunlock.service.ConversionTaskSnapshot
+import musicunlock.service.ConversionTaskState
 import musicunlock.settings.AppSettings
 import java.io.File
 import java.nio.file.FileSystems
@@ -16,6 +19,7 @@ import java.nio.file.Files
 import java.nio.file.StandardWatchEventKinds
 import java.nio.file.WatchKey
 import java.util.concurrent.ConcurrentHashMap
+import java.util.UUID
 
 class WatchEventResult(val path: String, val success: Boolean, val message: String?)
 
@@ -26,7 +30,13 @@ class FolderWatcherService(
     private val onResult: (WatchEventResult) -> Unit = {},
 ) {
     private val pending = ConcurrentHashMap<String, Long>()
+    private val pendingAutomation = ConcurrentHashMap<String, PendingAutomation>()
+    private val actions = AutomationActionService()
     private val roots = mutableMapOf<WatchKey, File>()
+
+    init {
+        conversionManager?.addListener(::handleConversionTask)
+    }
 
     fun start(scope: CoroutineScope) {
         scope.launch(Dispatchers.IO) {
@@ -80,18 +90,26 @@ class FolderWatcherService(
             if (!file.isFile) return@forEach
             val rule = AutomationRuleEngine.select(settings, file)
             val effective = AutomationRuleEngine.effectiveSettings(settings, rule)
-            if (conversionManager != null) {
-                conversionManager.enqueue(
-                    inputPath = file.absolutePath,
-                    outputDir = effective.outputDir,
-                    outputFormat = effective.outputFormat,
-                    bitrateKbps = effective.bitrateKbps,
-                    outputTemplate = effective.localOutputTemplate,
-                    existingFilePolicy = effective.localExistingFilePolicy,
-                    forceOverwrite = !effective.skipExisting,
-                    trashSourceOnSuccess = rule?.trashSourceOnSuccess == true,
-                )
-                onResult(WatchEventResult(path, true, "已按规则「${rule?.name ?: "默认"}」加入本地转换任务"))
+            val manager = conversionManager
+            if (manager != null) {
+                val taskId = UUID.randomUUID().toString()
+                pendingAutomation[taskId] = PendingAutomation(rule, file, File(effective.outputDir))
+                runCatching {
+                    manager.enqueue(
+                        inputPath = file.absolutePath,
+                        outputDir = effective.outputDir,
+                        outputFormat = effective.outputFormat,
+                        bitrateKbps = effective.bitrateKbps,
+                        outputTemplate = effective.localOutputTemplate,
+                        existingFilePolicy = effective.localExistingFilePolicy,
+                        forceOverwrite = !effective.skipExisting,
+                        trashSourceOnSuccess = rule?.trashSourceOnSuccess == true,
+                        id = taskId,
+                    )
+                }.onFailure { error ->
+                    pendingAutomation.remove(taskId)
+                    onResult(WatchEventResult(path, false, error.message ?: error.toString()))
+                }
             } else {
                 val error = MusicConverter.convertWithError(
                     inputPath = file.absolutePath,
@@ -100,8 +118,44 @@ class FolderWatcherService(
                     bitrateKbps = effective.bitrateKbps,
                     forceOverwrite = !effective.skipExisting,
                 )
-                onResult(WatchEventResult(path, error == null, error))
+                val actionMessages = if (error == null) {
+                    rule?.let { actions.afterMatch(it, file, File(effective.outputDir)) }.orEmpty()
+                } else emptyList()
+                onResult(WatchEventResult(path, error == null, listOfNotNull(
+                    error,
+                    actionMessages.takeIf { it.isNotEmpty() }?.joinToString("；"),
+                ).joinToString(" · ").ifBlank { null }))
             }
+        }
+    }
+
+    private fun handleConversionTask(task: ConversionTaskSnapshot) {
+        val pendingTask = pendingAutomation[task.id] ?: return
+        when (task.state) {
+            ConversionTaskState.COMPLETED, ConversionTaskState.SKIPPED -> {
+                pendingAutomation.remove(task.id)
+                val outputDir = task.outputFile?.parentFile ?: pendingTask.outputDir
+                val actionMessages = pendingTask.rule
+                    ?.let { actions.afterMatch(it, pendingTask.input, outputDir, task.outputFile) }
+                    .orEmpty()
+                onResult(WatchEventResult(
+                    pendingTask.input.absolutePath,
+                    true,
+                    listOfNotNull(
+                        if (task.state == ConversionTaskState.COMPLETED) "已按规则「${pendingTask.rule?.name ?: "默认"}」转换完成" else "输出文件已存在，已跳过",
+                        actionMessages.takeIf { it.isNotEmpty() }?.joinToString("；"),
+                    ).joinToString(" · "),
+                ))
+            }
+            ConversionTaskState.FAILED, ConversionTaskState.CANCELLED, ConversionTaskState.DUPLICATE -> {
+                pendingAutomation.remove(task.id)
+                onResult(WatchEventResult(
+                    pendingTask.input.absolutePath,
+                    false,
+                    task.message ?: task.state.name,
+                ))
+            }
+            else -> Unit
         }
     }
 
@@ -119,3 +173,9 @@ class FolderWatcherService(
         }
     }
 }
+
+private data class PendingAutomation(
+    val rule: musicunlock.settings.AutomationRule?,
+    val input: File,
+    val outputDir: File,
+)

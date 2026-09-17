@@ -168,8 +168,8 @@ class ConversionTaskManager(
         forceOverwrite: Boolean = false,
         deduplicate: Boolean = false,
         trashSourceOnSuccess: Boolean = false,
+        id: String = UUID.randomUUID().toString(),
     ): String {
-        val id = UUID.randomUUID().toString()
         addTask(
             ConversionTaskRecord(
                 id = id,

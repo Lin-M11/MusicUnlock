@@ -7,6 +7,7 @@ import musicunlock.automation.DesktopAutomationService
 import musicunlock.library.LibraryExportService
 import musicunlock.library.LibraryIndex
 import musicunlock.library.AudioQualityInspector
+import musicunlock.library.SmartPlaylistKind
 import musicunlock.online.DownloadTaskManager
 import musicunlock.online.DownloadTaskState
 import musicunlock.online.toTranscodeFormat
@@ -17,6 +18,8 @@ import musicunlock.settings.DownloadExistingPolicy
 import musicunlock.settings.OutputFormat
 import musicunlock.settings.QualityStrategy
 import musicunlock.settings.SettingsStore
+import musicunlock.sync.LibrarySyncService
+import musicunlock.sync.MediaServerIntegrationService
 import musicunlock.sync.WebDavSyncService
 import java.io.File
 
@@ -66,6 +69,11 @@ object MainCli {
         var webdavRestore = false
         var webdavPassword: String? = null
         var providerHealth = false
+        var deepScanPath: String? = null
+        var smartPlaylist: String? = null
+        var syncProfileId: String? = null
+        var mediaRefreshId: String? = null
+        var printOpenApi = false
 
         var i = 0
         while (i < args.size) {
@@ -148,6 +156,23 @@ object MainCli {
                     webdavPassword = args[++i]
                 }
                 "--provider-health" -> providerHealth = true
+                "--deep-scan" -> {
+                    if (i + 1 >= args.size) { println("缺少深度扫描目录"); return 1 }
+                    deepScanPath = args[++i]
+                }
+                "--smart" -> {
+                    if (i + 1 >= args.size) { println("缺少智能列表类型"); return 1 }
+                    smartPlaylist = args[++i]
+                }
+                "--sync-profile" -> {
+                    if (i + 1 >= args.size) { println("缺少同步配置 ID"); return 1 }
+                    syncProfileId = args[++i]
+                }
+                "--media-refresh" -> {
+                    if (i + 1 >= args.size) { println("缺少媒体服务器 ID"); return 1 }
+                    mediaRefreshId = args[++i]
+                }
+                "--openapi" -> printOpenApi = true
                 "--json" -> onlineJson = true
                 "--download" -> downloadSearchResults = true
                 "--favorites" -> favorites = true
@@ -257,6 +282,45 @@ object MainCli {
                 println("扫描完成：索引 ${report.indexed} 个，清理 ${report.removed} 条，损坏 ${report.invalid.size} 个")
                 if (report.invalid.isEmpty()) 0 else 1
             }
+        }
+
+        if (printOpenApi) {
+            println(com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(DesktopAutomationService.openApiDocument(SettingsStore.load())))
+            return 0
+        }
+
+        if (deepScanPath != null) {
+            val report = LibraryIndex().scan(File(deepScanPath), hash = true, analyze = true)
+            println("深度分析完成：索引 ${report.indexed} 个，移除 ${report.removed} 个，损坏 ${report.invalid.size} 个")
+            return 0
+        }
+
+        if (smartPlaylist != null) {
+            val kind = runCatching { SmartPlaylistKind.valueOf(smartPlaylist.uppercase()) }.getOrElse {
+                println("智能列表类型：recently_added / recently_played / most_played / favorites / lossless / needs_attention")
+                return 1
+            }
+            LibraryIndex().smartPlaylist(kind).forEach { println("${it.artist.orEmpty()}\t${it.title.orEmpty()}\t${it.path}") }
+            return 0
+        }
+
+        if (syncProfileId != null) {
+            val settings = SettingsStore.load()
+            val profile = settings.librarySyncProfiles.firstOrNull { it.id == syncProfileId }
+                ?: run { println("未找到同步配置：$syncProfileId"); return 1 }
+            val result = LibrarySyncService().sync(profile, LibraryIndex().all())
+            println(result.summary)
+            result.conflicts.forEach { println("冲突：${it.relativePath} - ${it.reason}") }
+            result.errors.forEach { println("错误：$it") }
+            return if (result.errors.isEmpty()) 0 else 1
+        }
+
+        if (mediaRefreshId != null) {
+            val server = SettingsStore.load().mediaServers.firstOrNull { it.id == mediaRefreshId }
+                ?: run { println("未找到媒体服务器：$mediaRefreshId"); return 1 }
+            val result = MediaServerIntegrationService().trigger(server)
+            println("${result.serverName}：${result.message}")
+            return if (result.success) 0 else 1
         }
 
         inspectPath?.let { path ->
@@ -422,6 +486,11 @@ object MainCli {
         println("--inspect [path]                 : inspect audio quality, corruption and clipping")
         println("--webdav-backup|--webdav-restore : upload or restore the full backup over WebDAV")
         println("--provider-health                : check provider sessions, capabilities and latency")
+        println("--deep-scan [dir]                : build SQLite index with acoustic fingerprints and quality analysis")
+        println("--smart [kind]                   : print a smart playlist (favorites/lossless/recently_played/…)")
+        println("--sync-profile [id]              : run a device or WebDAV library sync profile")
+        println("--media-refresh [id]             : trigger Plex/Jellyfin/Navidrome/Subsonic library scan")
+        println("--openapi                        : print the local API OpenAPI document")
         println("-u,--url [link]                  : download a song/playlist/album/artist share link")
         println("--playlist [id]                  : download one playlist id")
         println("--search [keyword]               : search without downloading")

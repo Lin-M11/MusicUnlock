@@ -41,16 +41,25 @@ import musicunlock.backup.AppBackupService
 import musicunlock.desktop.AutoStartService
 import musicunlock.diagnostics.Diagnostics
 import musicunlock.library.LibraryIndex
+import musicunlock.sync.LibrarySyncService
+import musicunlock.sync.MediaServerIntegrationService
 import musicunlock.online.DownloadTaskManager
 import musicunlock.service.ConversionTaskManager
 import musicunlock.settings.AppSettings
 import musicunlock.settings.AutomationRule
 import musicunlock.settings.DownloadExistingPolicy
+import musicunlock.settings.LibrarySyncProfile
+import musicunlock.settings.MediaServerConfig
+import musicunlock.settings.MediaServerType
+import musicunlock.settings.PlatformCredentialStore
 import musicunlock.settings.LyricsMode
 import musicunlock.settings.OutputFormat
 import musicunlock.settings.QualityStrategy
 import musicunlock.settings.SettingsPortability
 import musicunlock.settings.SettingsUpdate
+import musicunlock.settings.SyncConflictPolicy
+import musicunlock.settings.SyncDestinationType
+import musicunlock.settings.SyncMode
 import musicunlock.settings.extension
 import musicunlock.settings.outputBitrates
 import musicunlock.settings.usesBitrate
@@ -89,6 +98,14 @@ internal fun SettingsPage(
     var webdavUsername by remember(settings.webdavUsername) { mutableStateOf(settings.webdavUsername.orEmpty()) }
     var webdavPassword by remember { mutableStateOf("") }
     var webdavRemoteFile by remember(settings.webdavRemoteFile) { mutableStateOf(settings.webdavRemoteFile) }
+    var editingRule by remember { mutableStateOf<AutomationRule?>(null) }
+    val librarySync = remember { LibrarySyncService() }
+    val mediaServers = remember { MediaServerIntegrationService() }
+    var mediaServerType by remember { mutableStateOf(MediaServerType.PLEX) }
+    var mediaServerName by remember { mutableStateOf("Home Media Server") }
+    var mediaServerUrl by remember { mutableStateOf("") }
+    var mediaServerUsername by remember { mutableStateOf("") }
+    var mediaServerSecret by remember { mutableStateOf("") }
 
     fun exportBackup() {
         val target = FileDialogs.saveFile("导出完整备份", "MusicUnlock-backup.zip") ?: return
@@ -123,7 +140,8 @@ internal fun SettingsPage(
         }
     }
 
-    Row(modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    Box(modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Column(
             modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(scroll),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -230,6 +248,7 @@ internal fun SettingsPage(
                             Text(rule.name, fontSize = 12.sp, color = t.text, maxLines = 1)
                             Text("${rule.inputDir} → ${rule.outputDir} · ${rule.outputFormat.name}", fontSize = 10.5.sp, color = t.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
+                        SettingsAction("编辑") { editingRule = rule }
                         SettingsAction("移除") {
                             onUpdateSettings { current -> current.copy(automationRules = current.automationRules.filterNot { it.id == rule.id }) }
                         }
@@ -298,6 +317,133 @@ internal fun SettingsPage(
                 ToggleRow("下载时阻止系统休眠", settings.preventSleepWhileDownloading) { value -> onUpdateSettings { it.copy(preventSleepWhileDownloading = value) } }
                 ToggleRow("关闭窗口后驻留托盘", settings.minimizeToTray) { value -> onUpdateSettings { it.copy(minimizeToTray = value) } }
                 ToggleRow("自动下载正式版本更新", settings.autoDownloadUpdates) { value -> onUpdateSettings { it.copy(autoDownloadUpdates = value) } }
+                SettingsSpacer()
+                SettingsLabel("播放器音频处理")
+                ToggleRow("响度归一化", settings.playerLoudnessNormalization) { value -> onUpdateSettings { it.copy(playerLoudnessNormalization = value) } }
+                NumberSetting("低频增强 dB", settings.playerBassBoostDb, -12, 12) { value -> onUpdateSettings { it.copy(playerBassBoostDb = value) } }
+                NumberSetting("高频增强 dB", settings.playerTrebleBoostDb, -12, 12) { value -> onUpdateSettings { it.copy(playerTrebleBoostDb = value) } }
+                NumberSetting("淡入淡出秒数", settings.playerFadeSeconds, 0, 12) { value -> onUpdateSettings { it.copy(playerFadeSeconds = value) } }
+            }
+
+            SettingsCard("设备与曲库同步") {
+                settings.librarySyncProfiles.forEach { profile ->
+                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(profile.name, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = t.text, maxLines = 1)
+                            Text(
+                                listOfNotNull(
+                                    profile.localPath ?: profile.remoteUrl,
+                                    profile.mode.syncModeLabel(),
+                                    profile.conflictPolicy.conflictLabel(),
+                                    profile.outputFormat?.name ?: "原始格式",
+                                ).joinToString(" · "),
+                                fontSize = 10.5.sp,
+                                color = t.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        SettingsAction(if (profile.mode == SyncMode.UPLOAD_ONLY) "仅上传" else if (profile.mode == SyncMode.MIRROR) "镜像" else "双向") {
+                            onUpdateSettings { current ->
+                                current.copy(librarySyncProfiles = current.librarySyncProfiles.map {
+                                    if (it.id == profile.id) it.copy(mode = it.mode.next()) else it
+                                })
+                            }
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        SettingsAction("冲突: ${profile.conflictPolicy.conflictLabel()}") {
+                            onUpdateSettings { current ->
+                                current.copy(librarySyncProfiles = current.librarySyncProfiles.map {
+                                    if (it.id == profile.id) it.copy(conflictPolicy = it.conflictPolicy.next()) else it
+                                })
+                            }
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        SettingsAction("同步", primary = true, enabled = !busy) {
+                            busy = true
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    runCatching { librarySync.sync(profile, library.all()) }
+                                }
+                                status = result.fold({ "同步完成：${it.summary}" }, { "同步失败：${it.message}" })
+                                busy = false
+                            }
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        SettingsAction("移除") {
+                            onUpdateSettings { current -> current.copy(librarySyncProfiles = current.librarySyncProfiles.filterNot { it.id == profile.id }) }
+                        }
+                    }
+                }
+                SettingsSpacer()
+                SettingsLabel("媒体服务器刷新")
+                settings.mediaServers.forEach { server ->
+                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(server.name, fontSize = 12.sp, color = t.text, maxLines = 1)
+                            Text("${server.type.name} · ${server.baseUrl}", fontSize = 10.5.sp, color = t.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        SettingsAction("触发扫描", primary = true) {
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) { mediaServers.trigger(server) }
+                                status = if (result.success) "${server.name}：${result.message}" else "${server.name}：${result.message}"
+                            }
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        SettingsAction("移除") {
+                            onUpdateSettings { current -> current.copy(mediaServers = current.mediaServers.filterNot { it.id == server.id }) }
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    MediaServerType.entries.forEach { type ->
+                        AppChoiceChip(type.displayName(), type == mediaServerType, { mediaServerType = type })
+                    }
+                }
+                SettingsTextField(mediaServerName, "服务器名称", fill = true) { mediaServerName = it }
+                SettingsTextField(mediaServerUrl, "服务器地址，如 http://127.0.0.1:8096", fill = true) { mediaServerUrl = it }
+                SettingsTextField(mediaServerUsername, "用户名（Subsonic 需要）", fill = true) { mediaServerUsername = it }
+                SettingsTextField(mediaServerSecret, "Token / API Key / 密码（写入系统凭据库）", fill = true) { mediaServerSecret = it }
+                SettingsAction("添加媒体服务器", enabled = mediaServerUrl.isNotBlank()) {
+                    val id = UUID.randomUUID().toString()
+                    if (mediaServerSecret.isNotBlank()) PlatformCredentialStore().put("media-server:$id", mediaServerSecret)
+                    val server = MediaServerConfig(
+                        id = id,
+                        name = mediaServerName.trim().ifBlank { mediaServerType.displayName() },
+                        type = mediaServerType,
+                        baseUrl = mediaServerUrl.trim(),
+                        username = mediaServerUsername.trim().takeIf(String::isNotEmpty),
+                    )
+                    onUpdateSettings { current -> current.copy(mediaServers = current.mediaServers + server) }
+                    mediaServerSecret = ""
+                }
+                SettingsSpacer()
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SettingsAction("添加本地同步") {
+                        FileDialogs.pickFolder("选择同步目标目录")?.let { folder ->
+                            val profile = LibrarySyncProfile(
+                                id = UUID.randomUUID().toString(),
+                                name = folder.name.ifBlank { "本地同步" },
+                                destinationType = SyncDestinationType.LOCAL_FOLDER,
+                                localPath = folder.absolutePath,
+                                mode = SyncMode.MIRROR,
+                            )
+                            onUpdateSettings { current -> current.copy(librarySyncProfiles = current.librarySyncProfiles + profile) }
+                        }
+                    }
+                    SettingsAction("添加 WebDAV 同步", enabled = settings.webdavUrl != null) {
+                        val profile = LibrarySyncProfile(
+                            id = UUID.randomUUID().toString(),
+                            name = "WebDAV 曲库",
+                            destinationType = SyncDestinationType.WEBDAV,
+                            remoteUrl = settings.webdavUrl,
+                            remoteDir = "MusicUnlock",
+                            username = settings.webdavUsername,
+                            mode = SyncMode.TWO_WAY,
+                        )
+                        onUpdateSettings { current -> current.copy(librarySyncProfiles = current.librarySyncProfiles + profile) }
+                    }
+                }
             }
 
             SettingsCard("备份、迁移与诊断") {
@@ -363,8 +509,8 @@ internal fun SettingsPage(
                                     status = withContext(Dispatchers.IO) {
                                         runCatching { UpdateDownloader.download(release, target, currentPlatform()) }
                                             .fold({
-                                                UpdateInstaller.openInstaller(it.file)
-                                                "安装包已下载并通过校验：${it.file.absolutePath}"
+                                                UpdateInstaller.installAfterExit(it.file).getOrThrow()
+                                                kotlin.system.exitProcess(0)
                                             }, { "更新下载失败：${it.message}" })
                                     }
                                     busy = false
@@ -376,7 +522,21 @@ internal fun SettingsPage(
                 Text(status, fontSize = 12.sp, color = t.textSecondary, modifier = Modifier.padding(top = 8.dp))
             }
         }
-        AppVerticalScrollbar(state = scroll, modifier = Modifier.align(Alignment.CenterVertically).fillMaxHeight())
+        }
+        AppVerticalScrollbar(state = scroll, modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 4.dp))
+        editingRule?.let { rule ->
+            AutomationRuleEditorOverlay(
+                initial = rule,
+                onSave = { updated ->
+                    onUpdateSettings { current ->
+                        current.copy(automationRules = current.automationRules.map { if (it.id == updated.id) updated else it })
+                    }
+                    editingRule = null
+                    status = "自动化规则已保存：${updated.name}"
+                },
+                onClose = { editingRule = null },
+            )
+        }
     }
 }
 
@@ -476,6 +636,39 @@ private fun SettingsLabel(text: String) {
 @Composable
 private fun SettingsSpacer() {
     Spacer(Modifier.height(12.dp))
+}
+
+private fun MediaServerType.displayName(): String = when (this) {
+    MediaServerType.PLEX -> "Plex"
+    MediaServerType.JELLYFIN -> "Jellyfin"
+    MediaServerType.NAVIDROME -> "Navidrome"
+    MediaServerType.SUBSONIC -> "Subsonic"
+}
+
+private fun SyncMode.syncModeLabel(): String = when (this) {
+    SyncMode.UPLOAD_ONLY -> "仅上传"
+    SyncMode.MIRROR -> "镜像"
+    SyncMode.TWO_WAY -> "双向"
+}
+
+private fun SyncMode.next(): SyncMode = when (this) {
+    SyncMode.UPLOAD_ONLY -> SyncMode.MIRROR
+    SyncMode.MIRROR -> SyncMode.TWO_WAY
+    SyncMode.TWO_WAY -> SyncMode.UPLOAD_ONLY
+}
+
+private fun SyncConflictPolicy.conflictLabel(): String = when (this) {
+    SyncConflictPolicy.KEEP_NEWER -> "较新"
+    SyncConflictPolicy.KEEP_LOCAL -> "本地"
+    SyncConflictPolicy.KEEP_REMOTE -> "远端"
+    SyncConflictPolicy.KEEP_BOTH -> "保留双份"
+}
+
+private fun SyncConflictPolicy.next(): SyncConflictPolicy = when (this) {
+    SyncConflictPolicy.KEEP_NEWER -> SyncConflictPolicy.KEEP_LOCAL
+    SyncConflictPolicy.KEEP_LOCAL -> SyncConflictPolicy.KEEP_REMOTE
+    SyncConflictPolicy.KEEP_REMOTE -> SyncConflictPolicy.KEEP_BOTH
+    SyncConflictPolicy.KEEP_BOTH -> SyncConflictPolicy.KEEP_NEWER
 }
 
 private fun OutputFormat.localDisplayName(): String = when (this) {
