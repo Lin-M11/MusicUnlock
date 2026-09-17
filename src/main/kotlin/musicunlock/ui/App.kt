@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,19 +49,25 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AudioFile
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
@@ -68,6 +75,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -106,13 +114,27 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.singleWindowApplication
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import musicunlock.AppLinks
 import musicunlock.BuildInfo
 import musicunlock.core.Formats
+import musicunlock.kugou.KugouApi
+import musicunlock.kugou.KugouDownloadPage
+import musicunlock.kuwo.KuwoApi
+import musicunlock.kuwo.KuwoDownloadPage
 import musicunlock.ncm.NeteaseApi
+import musicunlock.online.DownloadTaskManager
+import musicunlock.online.OnlineNetwork
+import musicunlock.online.DownloadTaskState
+import musicunlock.library.LibraryIndex
+import musicunlock.library.LibraryMaintenanceService
+import musicunlock.online.MusicSong
+import musicunlock.playlist.LocalTrack
+import musicunlock.playlist.MatchOutcome
+import musicunlock.playlist.PlaylistImport
 import musicunlock.qq.QqDownloadPage
 import musicunlock.qq.QqMusicApi
 import musicunlock.service.MusicConverter
@@ -121,6 +143,10 @@ import musicunlock.settings.OutputFormat
 import musicunlock.settings.SettingsStore
 import musicunlock.settings.SettingsUpdate
 import musicunlock.settings.outputBitrates
+import musicunlock.sync.CrossPlatformMatcher
+import musicunlock.sync.SubscriptionManager
+import musicunlock.watch.FolderWatcherService
+import musicunlock.desktop.DesktopIntegration
 import musicunlock.update.ReleaseInfo
 import musicunlock.update.UpdateChecker
 import java.awt.Desktop
@@ -134,11 +160,13 @@ import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
 
 /** 单个文件的转换状态。 */
-enum class FileStatus { PENDING, CONVERTING, DONE, FAILED, DUPLICATE }
+enum class FileStatus { PENDING, CONVERTING, DONE, SKIPPED, FAILED, DUPLICATE }
 
 class FileItem(val path: String, val name: String) {
     var status by mutableStateOf(FileStatus.PENDING)
     var message by mutableStateOf<String?>(null)
+    /** 是否勾选参与转换；歌单导入会按匹配结果重设。 */
+    var selected by mutableStateOf(true)
 }
 
 // ============================================================
@@ -151,8 +179,52 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
     var dark by remember { mutableStateOf(false) }
     var aboutOpen by remember { mutableStateOf(false) }
     var resetOpen by remember { mutableStateOf(false) }
+    var importOpen by remember { mutableStateOf(false) }
+    val files = remember { mutableStateListOf<FileItem>() }
+    val libraryIndex = remember { LibraryIndex() }
+    val downloadManager = remember { DownloadTaskManager(library = libraryIndex, settingsProvider = { SettingsStore.load() }) }
     var sessionRevision by remember { mutableStateOf(0) }
     val updateSettings: SettingsUpdate = { transform -> settings = SettingsStore.update(transform) }
+    val libraryMaintenance = remember { LibraryMaintenanceService(libraryIndex) }
+    val crossPlatformMatcher = remember { CrossPlatformMatcher(libraryMaintenance) }
+    val folderWatcher = remember { FolderWatcherService(settingsProvider = { SettingsStore.load() }) }
+    val downloadTaskState by downloadManager.tasks.collectAsState()
+    val activeDownloadCount = downloadTaskState.count {
+        it.state in setOf(DownloadTaskState.DOWNLOADING, DownloadTaskState.TRANSCODING, DownloadTaskState.TAGGING, DownloadTaskState.QUEUED)
+    }
+    val subscriptionManager = remember {
+        SubscriptionManager(
+            settingsProvider = { SettingsStore.load() },
+            updateSettings = updateSettings,
+            taskManager = downloadManager,
+            library = libraryIndex,
+        )
+    }
+    LaunchedEffect(settings.proxyUrl, settings.useSystemProxy, settings.connectTimeoutSeconds, settings.downloadTimeoutSeconds) {
+        OnlineNetwork.configure(settings)
+    }
+    LaunchedEffect(Unit) { subscriptionManager.start(this) }
+    LaunchedEffect(Unit) { folderWatcher.start(this) }
+    LaunchedEffect(downloadManager) {
+        val listener = downloadManager.addListener { task ->
+            val current = SettingsStore.load()
+            if (current.notifyOnComplete && task.state in setOf(DownloadTaskState.COMPLETED, DownloadTaskState.FAILED, DownloadTaskState.SKIPPED)) {
+                val title = when (task.state) {
+                    DownloadTaskState.COMPLETED -> "下载完成"
+                    DownloadTaskState.SKIPPED -> "已跳过"
+                    else -> "下载失败"
+                }
+                DesktopIntegration.notify(title, "${task.title} - ${task.artist}")
+            }
+        }
+        try { awaitCancellation() } finally { listener.close() }
+    }
+    LaunchedEffect(activeDownloadCount, settings.preventSleepWhileDownloading) {
+        DesktopIntegration.updatePreventSleep(
+            downloadManager.tasks.value.any { it.state in setOf(DownloadTaskState.DOWNLOADING, DownloadTaskState.TRANSCODING, DownloadTaskState.TAGGING) } &&
+                settings.preventSleepWhileDownloading,
+        )
+    }
     MusicUnlockTheme(darkTheme = dark) {
         Box(Modifier.fillMaxSize()) {
             MainScreen(
@@ -163,7 +235,21 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
                 settings = settings,
                 onUpdateSettings = updateSettings,
                 sessionRevision = sessionRevision,
+                files = files,
+                downloadManager = downloadManager,
+                subscriptionManager = subscriptionManager,
+                libraryMaintenance = libraryMaintenance,
+                crossPlatformMatcher = crossPlatformMatcher,
+                library = libraryIndex,
+                onOpenImport = { importOpen = true },
             )
+            if (importOpen) {
+                PlaylistImportOverlay(
+                    files = files,
+                    onApplySelection = { paths -> files.forEach { it.selected = paths.contains(it.path) } },
+                    onClose = { importOpen = false },
+                )
+            }
             if (aboutOpen) AboutOverlay(onClose = { aboutOpen = false })
             if (resetOpen) {
                 ResetSettingsOverlay(
@@ -171,6 +257,8 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
                     onConfirm = {
                         NeteaseApi.logout()
                         QqMusicApi.logout()
+                        KugouApi.logout()
+                        KuwoApi.logout()
                         settings = SettingsStore.reset()
                         sessionRevision++
                         onResetWindowSize()
@@ -194,6 +282,23 @@ fun showWindow() {
     ) {
         LaunchedEffect(Unit) {
             window.minimumSize = Dimension(980, 680)
+        }
+        LaunchedEffect(Unit) {
+            while (true) {
+                val settings = SettingsStore.load()
+                if (settings.minimizeToTray || settings.notifyOnComplete) {
+                    DesktopIntegration.installTray(
+                        onShow = { window.isVisible = true },
+                        onExit = { kotlin.system.exitProcess(0) },
+                    )
+                }
+                window.defaultCloseOperation = if (settings.minimizeToTray) {
+                    javax.swing.WindowConstants.HIDE_ON_CLOSE
+                } else {
+                    javax.swing.WindowConstants.EXIT_ON_CLOSE
+                }
+                delay(1_000L)
+            }
         }
         LaunchedEffect(windowState.size) {
             delay(500)
@@ -222,12 +327,19 @@ fun MainScreen(
     settings: AppSettings,
     onUpdateSettings: SettingsUpdate,
     sessionRevision: Int,
+    files: SnapshotStateList<FileItem>,
+    downloadManager: DownloadTaskManager,
+    subscriptionManager: SubscriptionManager,
+    libraryMaintenance: LibraryMaintenanceService,
+    crossPlatformMatcher: CrossPlatformMatcher,
+    library: LibraryIndex,
+    onOpenImport: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val files = remember { mutableStateListOf<FileItem>() }
     var converting by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
     var doneCount by remember { mutableStateOf(0) }
+    var skippedCount by remember { mutableStateOf(0) }
     var failCount by remember { mutableStateOf(0) }
     var page by remember { mutableStateOf(0) }
     var update by remember { mutableStateOf<ReleaseInfo?>(null) }
@@ -238,9 +350,12 @@ fun MainScreen(
     }
 
     val t = cleanTokens()
+    val downloadTasks by downloadManager.tasks.collectAsState()
+    val activeDownloads = downloadTasks.count { it.state !in setOf(DownloadTaskState.COMPLETED, DownloadTaskState.FAILED, DownloadTaskState.CANCELLED, DownloadTaskState.SKIPPED, DownloadTaskState.PAUSED) }
     val totalBytes = files.sumOf { File(it.path).length() }
     val convertingCount = files.count { it.status == FileStatus.CONVERTING }
-    val pendingCount = files.count { it.status == FileStatus.PENDING }
+    val pendingCount = files.count { it.selected && it.status == FileStatus.PENDING }
+    val selectedCount = files.count { it.selected }
 
     Row(Modifier.fillMaxSize().background(t.bg)) {
         AppSidebar(
@@ -253,6 +368,9 @@ fun MainScreen(
             totalCount = files.size,
             totalSize = humanSize(totalBytes),
             convertingCount = convertingCount,
+            activeDownloads = activeDownloads,
+            queuedDownloads = downloadTasks.count { it.state == DownloadTaskState.QUEUED },
+            subscriptionCount = settings.subscriptions.count { it.enabled },
         )
         Box(Modifier.width(1.dp).fillMaxHeight().background(t.border))
 
@@ -302,6 +420,10 @@ fun MainScreen(
                         QueueCard(
                             files = files,
                             converting = converting,
+                            onToggleSelected = { index -> files[index].selected = !files[index].selected },
+                            onSelectAll = { files.forEach { it.selected = true } },
+                            onClearSelection = { files.forEach { it.selected = false } },
+                            onOpenImport = onOpenImport,
                             onRemove = { index -> if (!converting) files.removeAt(index) },
                         )
                     }
@@ -311,6 +433,8 @@ fun MainScreen(
                         onOutputDirChange = { value -> onUpdateSettings { it.copy(outputDir = value) } },
                         dedup = settings.dedup,
                         onDedupChange = { value -> onUpdateSettings { it.copy(dedup = value) } },
+                        skipExisting = settings.skipExisting,
+                        onSkipExistingChange = { value -> onUpdateSettings { it.copy(skipExisting = value) } },
                         outputFormat = settings.outputFormat,
                         onOutputFormatChange = { value -> onUpdateSettings { it.copy(outputFormat = value) } },
                         bitrateKbps = settings.bitrateKbps,
@@ -318,8 +442,9 @@ fun MainScreen(
                         converting = converting,
                         progress = progress,
                         doneCount = doneCount,
+                        skippedCount = skippedCount,
                         failCount = failCount,
-                        totalCount = files.size,
+                        totalCount = selectedCount,
                     )
                 }
 
@@ -327,43 +452,58 @@ fun MainScreen(
                 Footer(
                     converting = converting,
                     convertingCount = convertingCount,
+                    selectedCount = selectedCount,
                     pendingCount = pendingCount,
-                    enabled = !converting && files.isNotEmpty(),
+                    enabled = !converting && selectedCount > 0,
                     onConvert = {
-                        if (files.isEmpty()) return@Footer
+                        val chosen = files.filter { it.selected }
+                        if (chosen.isEmpty()) return@Footer
                         converting = true
                         doneCount = 0
+                        skippedCount = 0
                         failCount = 0
                         progress = 0f
-                        val targets = if (settings.dedup) dedupFiles(files) else files.toList()
+                        val targets = if (settings.dedup) dedupFiles(chosen) else chosen
                         val output = settings.outputDir
                         val outputFormat = settings.outputFormat
                         val bitrateKbps = settings.bitrateKbps
+                        val forceOverwrite = !settings.skipExisting
                         scope.launch {
                             val total = targets.size
                             var processed = 0
-                            targets.forEachIndexed { idx, item ->
-                                item.status = FileStatus.CONVERTING
-                                val ok = withContext(Dispatchers.IO) {
-                                    val error = MusicConverter.convertWithError(
-                                        item.path,
-                                        output,
-                                        outputFormat,
-                                        bitrateKbps,
-                                    )
-                                    if (error == null) {
-                                        true
-                                    } else {
-                                        item.message = error
-                                        false
-                                    }
-                                }
-                                item.status = if (ok) FileStatus.DONE else FileStatus.FAILED
-                                if (ok) doneCount++ else failCount++
-                                processed++
-                                progress = processed.toFloat() / total
+                            val itemsByPath = targets.associateBy { it.path }
+                            try {
+                                MusicConverter.convertBatch(
+                                    inputPaths = targets.map { it.path },
+                                    outputDir = output,
+                                    outputFormat = outputFormat,
+                                    bitrateKbps = bitrateKbps,
+                                    forceOverwrite = forceOverwrite,
+                                    onStarted = { path ->
+                                        itemsByPath[path]?.status = FileStatus.CONVERTING
+                                    },
+                                    onFinished = { outcome ->
+                                        val item = itemsByPath[outcome.inputPath]
+                                        if (item != null) {
+                                            item.status = when {
+                                                outcome.skipped -> FileStatus.SKIPPED
+                                                outcome.succeeded -> FileStatus.DONE
+                                                else -> FileStatus.FAILED
+                                            }
+                                            item.message = outcome.error
+                                        }
+                                        when {
+                                            outcome.skipped -> skippedCount++
+                                            outcome.succeeded -> doneCount++
+                                            else -> failCount++
+                                        }
+                                        processed++
+                                        progress = processed.toFloat() / total
+                                    },
+                                )
+                            } finally {
+                                converting = false
                             }
-                            converting = false
                         }
                     },
                 )
@@ -372,17 +512,58 @@ fun MainScreen(
                     DownloadPage(
                         settings = settings,
                         onUpdateSettings = onUpdateSettings,
+                        downloadManager = downloadManager,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
                 }
-            } else {
+            } else if (page == 2) {
                 key(sessionRevision) {
                     QqDownloadPage(
                         settings = settings,
                         onUpdateSettings = onUpdateSettings,
+                        downloadManager = downloadManager,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
                 }
+            } else if (page == 3) {
+                key(sessionRevision) {
+                    KugouDownloadPage(
+                        settings = settings,
+                        onUpdateSettings = onUpdateSettings,
+                        downloadManager = downloadManager,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
+                }
+            } else if (page == 4) {
+                key(sessionRevision) {
+                    KuwoDownloadPage(
+                        settings = settings,
+                        onUpdateSettings = onUpdateSettings,
+                        downloadManager = downloadManager,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
+                }
+            } else if (page == 5) {
+                DownloadTaskPage(
+                    manager = downloadManager,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            } else if (page == 6) {
+                LibraryPage(
+                    settings = settings,
+                    onUpdateSettings = onUpdateSettings,
+                    maintenance = libraryMaintenance,
+                    subscriptionManager = subscriptionManager,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            } else {
+                DiscoverPage(
+                    settings = settings,
+                    downloadManager = downloadManager,
+                    crossPlatformMatcher = crossPlatformMatcher,
+                    library = library,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
             }
         }
     }
@@ -399,7 +580,12 @@ private fun WorkspaceHeader(
     val (title, subtitle) = when (page) {
         0 -> "格式转换" to "拖入加密音乐，保留标签与封面输出标准音频"
         1 -> "网易云下载" to "登录后选择歌单，下载歌曲"
-        else -> "QQ 音乐下载" to "登录后选择歌单，下载歌曲"
+        2 -> "QQ 音乐下载" to "登录后选择歌单，下载歌曲"
+        3 -> "酷狗下载" to "登录后选择收藏与创建的歌单，下载歌曲"
+        4 -> "酷我下载" to "登录后选择收藏与创建的歌单，下载歌曲"
+        5 -> "下载任务" to "查看进度、速度与剩余时间，随时暂停、继续和重试"
+        6 -> "曲库整理" to "扫描重复与缺失元数据，批量整理并周期同步歌单"
+        else -> "搜索与链接" to "搜索四个平台，粘贴歌曲、专辑、歌手或歌单链接后直接加入下载队列"
     }
 
     Row(
@@ -449,6 +635,9 @@ private fun AppSidebar(
     totalCount: Int,
     totalSize: String,
     convertingCount: Int,
+    activeDownloads: Int,
+    queuedDownloads: Int,
+    subscriptionCount: Int,
 ) {
     val t = cleanTokens()
     Column(
@@ -508,6 +697,47 @@ private fun AppSidebar(
             detail = "扫码或 Cookie",
             selected = page == 2,
             onClick = { onSelect(2) },
+        )
+        SidebarNavItem(
+            icon = Icons.Outlined.LibraryMusic,
+            title = "酷狗下载",
+            detail = "扫码或浏览器",
+            selected = page == 3,
+            onClick = { onSelect(3) },
+        )
+        SidebarNavItem(
+            icon = Icons.Outlined.MusicNote,
+            title = "酷我下载",
+            detail = "浏览器或 Cookie",
+            selected = page == 4,
+            onClick = { onSelect(4) },
+        )
+
+        Spacer(Modifier.height(20.dp))
+        SidebarSectionLabel("任务管理")
+        Spacer(Modifier.height(8.dp))
+        SidebarNavItem(
+            icon = Icons.Outlined.Download,
+            title = "下载任务",
+            detail = if (activeDownloads > 0 || queuedDownloads > 0) "$activeDownloads 进行中 · $queuedDownloads 等待" else "暂停、重试与历史",
+            selected = page == 5,
+            onClick = { onSelect(5) },
+        )
+
+        SidebarNavItem(
+            icon = Icons.Outlined.LibraryMusic,
+            title = "曲库整理",
+            detail = if (subscriptionCount > 0) "$subscriptionCount 个歌单追更中" else "扫描、标签与追更",
+            selected = page == 6,
+            onClick = { onSelect(6) },
+        )
+
+        SidebarNavItem(
+            icon = Icons.Outlined.Search,
+            title = "搜索与链接",
+            detail = "四平台统一搜索",
+            selected = page == 7,
+            onClick = { onSelect(7) },
         )
 
         Spacer(Modifier.weight(1f))
@@ -892,7 +1122,7 @@ private fun ResetSettingsOverlay(onClose: () -> Unit, onConfirm: () -> Unit) {
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "输出目录、去重、输出格式与码率、窗口大小和登录状态都会恢复为初始值。",
+                "输出目录、去重、跳过已完成、输出格式与码率、窗口大小和登录状态都会恢复为初始值。",
                 fontSize = 13.sp,
                 lineHeight = 20.sp,
                 color = t.textSecondary,
@@ -1065,9 +1295,14 @@ private fun DropZone(files: SnapshotStateList<FileItem>, onAddFiles: () -> Unit,
 private fun ColumnScope.QueueCard(
     files: SnapshotStateList<FileItem>,
     converting: Boolean,
+    onToggleSelected: (Int) -> Unit,
+    onSelectAll: () -> Unit,
+    onClearSelection: () -> Unit,
+    onOpenImport: () -> Unit,
     onRemove: (Int) -> Unit,
 ) {
     val t = cleanTokens()
+    val selectedCount = files.count { it.selected }
     Box(
         modifier = Modifier
             .weight(1f)
@@ -1087,12 +1322,46 @@ private fun ColumnScope.QueueCard(
                     fontWeight = FontWeight.SemiBold,
                     color = t.text,
                 )
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    "${files.size} 首 · ${humanSize(files.sumOf { File(it.path).length() })}",
-                    fontSize = 12.5.sp,
+                    "已选 $selectedCount / ${files.size} 首",
+                    fontSize = 12.sp,
                     color = t.textMuted,
                 )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "全选",
+                    modifier = Modifier
+                        .clickable(enabled = files.isNotEmpty() && selectedCount < files.size, onClick = onSelectAll)
+                        .padding(6.dp),
+                    fontSize = 12.5.sp,
+                    color = if (files.isNotEmpty() && selectedCount < files.size) t.primary else t.textMuted,
+                )
+                Text(
+                    "清空",
+                    modifier = Modifier
+                        .clickable(enabled = selectedCount > 0, onClick = onClearSelection)
+                        .padding(6.dp),
+                    fontSize = 12.5.sp,
+                    color = if (selectedCount > 0) t.textSecondary else t.textMuted,
+                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(t.primarySoft)
+                        .clickable(onClick = onOpenImport)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Outlined.PlaylistAdd,
+                        contentDescription = null,
+                        tint = t.primary,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("歌单导入", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = t.primary)
+                }
             }
             Box(Modifier.fillMaxWidth().height(1.dp).background(t.rowDivider))
             if (files.isEmpty()) {
@@ -1124,6 +1393,7 @@ private fun ColumnScope.QueueCard(
                             FileRow(
                                 item = item,
                                 converting = converting,
+                                onToggleSelected = { onToggleSelected(index) },
                                 onRemove = { onRemove(index) },
                             )
                             if (index < files.lastIndex) {
@@ -1142,16 +1412,23 @@ private fun ColumnScope.QueueCard(
 // ============================================================
 
 @Composable
-private fun FileRow(item: FileItem, converting: Boolean, onRemove: () -> Unit) {
+private fun FileRow(
+    item: FileItem,
+    converting: Boolean,
+    onToggleSelected: () -> Unit,
+    onRemove: () -> Unit,
+) {
     val t = cleanTokens()
     val ext = item.name.substringAfterLast('.', "").lowercase(Locale.ROOT)
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(enabled = !converting, onClick = onToggleSelected)
             .padding(horizontal = 18.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        QueueCheckbox(checked = item.selected, enabled = !converting, onToggle = onToggleSelected)
         ExtBadge(ext = ext)
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -1242,6 +1519,7 @@ private fun StatusChip(status: FileStatus) {
         FileStatus.PENDING -> Triple("等待中", t.waitBg, t.waitFg)
         FileStatus.CONVERTING -> Triple("转换中", t.primarySoft, t.primary)
         FileStatus.DONE -> Triple("已完成", t.successSoft, t.success)
+        FileStatus.SKIPPED -> Triple("已跳过", t.waitBg, t.waitFg)
         FileStatus.FAILED -> Triple("失败", t.errorSoft, t.error)
         FileStatus.DUPLICATE -> Triple("重复", t.dupBg, t.dupFg)
     }
@@ -1273,6 +1551,8 @@ private fun Rail(
     onOutputDirChange: (String) -> Unit,
     dedup: Boolean,
     onDedupChange: (Boolean) -> Unit,
+    skipExisting: Boolean,
+    onSkipExistingChange: (Boolean) -> Unit,
     outputFormat: OutputFormat,
     onOutputFormatChange: (OutputFormat) -> Unit,
     bitrateKbps: Int,
@@ -1280,6 +1560,7 @@ private fun Rail(
     converting: Boolean,
     progress: Float,
     doneCount: Int,
+    skippedCount: Int,
     failCount: Int,
     totalCount: Int,
 ) {
@@ -1315,6 +1596,29 @@ private fun Rail(
                 fontSize = 13.5.sp,
                 color = t.text,
             )
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(11.dp),
+        ) {
+            CleanSwitch(
+                checked = skipExisting,
+                enabled = !converting,
+                onChange = onSkipExistingChange,
+            )
+            Column {
+                Text(
+                    if (skipExisting) "跳过已完成" else "强制重新转换",
+                    fontSize = 13.5.sp,
+                    color = t.text,
+                )
+                Text(
+                    if (skipExisting) "已有输出时直接跳过" else "始终覆盖已有输出",
+                    fontSize = 11.5.sp,
+                    color = t.textMuted,
+                )
+            }
         }
         RailLabel("输出格式")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1353,7 +1657,7 @@ private fun Rail(
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(
-                        "成功 $doneCount · 失败 $failCount",
+                        "完成 $doneCount · 跳过 $skippedCount · 失败 $failCount",
                         fontSize = 12.5.sp,
                         color = t.textSecondary,
                     )
@@ -1470,6 +1774,7 @@ private fun ActionPill(label: String, onClick: () -> Unit) {
 private fun Footer(
     converting: Boolean,
     convertingCount: Int,
+    selectedCount: Int,
     pendingCount: Int,
     enabled: Boolean,
     onConvert: () -> Unit,
@@ -1480,9 +1785,10 @@ private fun Footer(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            if (converting) "转换中 $convertingCount 首 · 待处理 $pendingCount 首"
-            else if (pendingCount > 0) "待处理 $pendingCount 首"
-            else "已就绪",
+            if (converting) "转换中 $convertingCount 首 · 已选 $selectedCount 首"
+            else if (pendingCount > 0) "已选 $selectedCount 首 · 待处理 $pendingCount 首"
+            else if (selectedCount > 0) "已选 $selectedCount 首"
+            else "勾选要转换的文件后开始",
             fontSize = 13.sp,
             color = t.textSecondary,
         )
@@ -1598,6 +1904,303 @@ private fun IndeterminateGradientProgress(modifier: Modifier) {
                 .fillMaxWidth(p)
                 .clip(RoundedCornerShape(4.dp))
                 .background(Brush.horizontalGradient(listOf(Color(0xFFFF8A3D), t.primary))),
+        )
+    }
+}
+
+/** 队列勾选框:18dp 圆角方块,勾选后填充品牌橙。 */
+@Composable
+private fun QueueCheckbox(checked: Boolean, enabled: Boolean, onToggle: () -> Unit) {
+    val t = cleanTokens()
+    Box(
+        modifier = Modifier
+            .size(18.dp)
+            .clip(RoundedCornerShape(5.dp))
+            .background(if (checked) t.primary else t.surface)
+            .border(1.dp, if (checked) Color.Transparent else t.border, RoundedCornerShape(5.dp))
+            .clickable(enabled = enabled, onClick = onToggle),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) {
+            Icon(
+                Icons.Outlined.Check,
+                contentDescription = "已勾选",
+                tint = t.onPrimary,
+                modifier = Modifier.size(13.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 歌单导入:粘贴四平台歌曲/歌单/专辑/歌手链接,读取曲目并与本地队列匹配,
+ * 确认后按匹配结果勾选队列文件,未命中的曲目逐条列出。
+ */
+@Composable
+private fun PlaylistImportOverlay(
+    files: List<FileItem>,
+    onApplySelection: (Set<String>) -> Unit,
+    onClose: () -> Unit,
+) {
+    val t = cleanTokens()
+    val scope = rememberCoroutineScope()
+    var link by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var outcome by remember { mutableStateOf<MatchOutcome?>(null) }
+    val fieldColors = TextFieldDefaults.colors(
+        focusedContainerColor = t.surfaceSoft,
+        unfocusedContainerColor = t.surfaceSoft,
+        focusedIndicatorColor = t.primary,
+        unfocusedIndicatorColor = t.border,
+        focusedTextColor = t.text,
+        unfocusedTextColor = t.text,
+        cursorColor = t.primary,
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.38f))
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClose,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(560.dp)
+                .fillMaxHeight(0.84f)
+                .clip(RoundedCornerShape(18.dp))
+                .background(t.surface)
+                .border(1.dp, t.border, RoundedCornerShape(18.dp))
+                // 卡片内部吞掉点击,避免穿透到遮罩
+                .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {}
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.AutoMirrored.Outlined.PlaylistAdd,
+                    contentDescription = null,
+                    tint = t.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(9.dp))
+                Text("歌单导入", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = t.text)
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    Icons.Outlined.Close,
+                    contentDescription = "关闭",
+                    tint = t.textMuted,
+                    modifier = Modifier.size(18.dp).clickable(onClick = onClose),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "粘贴网易云、QQ、酷狗或酷我链接，自动勾选队列中对应的本地文件。",
+                fontSize = 12.5.sp,
+                lineHeight = 18.sp,
+                color = t.textSecondary,
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = link,
+                    onValueChange = {
+                        link = it
+                        error = null
+                    },
+                    placeholder = {
+                        Text(
+                            "https://music.163.com/playlist?id=… 或任一平台分享链接",
+                            fontSize = 12.sp,
+                            color = t.textMuted,
+                        )
+                    },
+                    singleLine = true,
+                    colors = fieldColors,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(10.dp))
+                Button(
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            error = null
+                            val snapshot = files.map { LocalTrack(it.path, it.name) }
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching { PlaylistImport.importAndMatch(link, snapshot) }
+                            }
+                            result.onSuccess { outcome = it }.onFailure {
+                                outcome = null
+                                error = it.message ?: "读取歌单失败"
+                            }
+                            busy = false
+                        }
+                    },
+                    enabled = !busy && link.isNotBlank(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = t.primary,
+                        contentColor = t.onPrimary,
+                        disabledContainerColor = t.surfaceSoft,
+                        disabledContentColor = t.textMuted,
+                    ),
+                    modifier = Modifier.height(48.dp),
+                ) {
+                    Text(
+                        if (busy) "读取中…" else "读取歌单",
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+
+            if (error != null) {
+                Spacer(Modifier.height(10.dp))
+                Text(error.orEmpty(), fontSize = 12.5.sp, color = t.error)
+            }
+
+            val result = outcome
+            if (result == null) {
+                Spacer(Modifier.weight(1f))
+                Text(
+                    if (files.isEmpty()) "队列里还没有文件，先添加要转换的本地文件" else "队列共 ${files.size} 首，读取歌单后按名称匹配",
+                    fontSize = 12.5.sp,
+                    color = t.textMuted,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.weight(1f))
+            } else {
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "命中 ${result.matched.size} 首 · 未命中 ${result.unmatched.size} 首",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = t.text,
+                )
+                Spacer(Modifier.height(6.dp))
+                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    if (result.matched.isNotEmpty()) {
+                        item { ImportSectionLabel("已命中 (${result.matched.size})", t.textSecondary) }
+                        items(result.matched) { match ->
+                            ImportTrackRow(
+                                song = match.song,
+                                detail = "→ ${match.filePaths.first().substringAfterLast('/')}",
+                                hit = true,
+                            )
+                        }
+                    }
+                    if (result.unmatched.isNotEmpty()) {
+                        item { ImportSectionLabel("未命中 (${result.unmatched.size})", t.textMuted) }
+                        items(result.unmatched) { song ->
+                            ImportTrackRow(song = song, detail = song.artistText, hit = false)
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "未命中的曲目不在队列中，可先添加对应本地文件后再导入",
+                    fontSize = 11.5.sp,
+                    color = t.textMuted,
+                )
+                Spacer(Modifier.weight(1f))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(11.dp))
+                        .clickable(onClick = onClose)
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    Text("取消", fontSize = 13.sp, color = t.textSecondary)
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        result?.let { onApplySelection(it.matchedPaths) }
+                        onClose()
+                    },
+                    enabled = (result?.matchedPaths?.isNotEmpty() ?: false),
+                    shape = RoundedCornerShape(11.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = t.primary,
+                        contentColor = t.onPrimary,
+                        disabledContainerColor = t.surfaceSoft,
+                        disabledContentColor = t.textMuted,
+                    ),
+                    modifier = Modifier.height(42.dp),
+                ) {
+                    Text(
+                        "仅勾选命中的 ${result?.matchedPaths?.size ?: 0} 首",
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportSectionLabel(text: String, color: Color) {
+    Text(
+        text,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = color,
+        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+    )
+}
+
+@Composable
+private fun ImportTrackRow(song: MusicSong, detail: String, hit: Boolean) {
+    val t = cleanTokens()
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(18.dp)
+                .clip(RoundedCornerShape(5.dp))
+                .background(if (hit) t.successSoft else t.errorSoft),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (hit) Icons.Outlined.Check else Icons.Outlined.Close,
+                contentDescription = null,
+                tint = if (hit) t.success else t.error,
+                modifier = Modifier.size(12.dp),
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                song.name,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = t.text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                detail,
+                fontSize = 11.5.sp,
+                color = t.textMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            if (hit) "命中" else "未命中",
+            fontSize = 11.5.sp,
+            color = if (hit) t.success else t.error,
         )
     }
 }

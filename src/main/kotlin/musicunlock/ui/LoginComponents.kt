@@ -39,6 +39,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import java.awt.image.BufferedImage
 
 /** 登录方式。短信仅由网易云提供，其余入口由两个平台共享同一套界面。 */
 internal enum class LoginMethod { QR, SMS, BROWSER }
@@ -281,4 +286,25 @@ internal fun BrowserLoginPanel(
         color = if (cookieError) t.error else t.textSecondary,
         textAlign = TextAlign.Center,
     )
+}
+
+
+/** 用平台返回的二维码内容生成位图，避免各登录页重复引入 ZXing。 */
+internal fun qrBitmap(content: String, size: Int, fg: Int, bg: Int): BufferedImage? {
+    return try {
+        val hints = mapOf(
+            EncodeHintType.MARGIN to 1,
+            EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+        )
+        val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size, hints)
+        val image = BufferedImage(size, size, BufferedImage.TYPE_INT_RGB)
+        for (x in 0 until size) {
+            for (y in 0 until size) {
+                image.setRGB(x, y, if (matrix[x, y]) fg else bg)
+            }
+        }
+        image
+    } catch (e: Exception) {
+        null
+    }
 }

@@ -25,6 +25,21 @@ object FileDialogs {
         }
     }
 
+    fun saveFile(title: String, defaultName: String): File? {
+        val chooser = JFileChooser()
+        chooser.dialogTitle = title
+        chooser.selectedFile = File(defaultName)
+        return if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+    }
+
+    fun pickFile(title: String, extensions: List<String>): File? {
+        val chooser = JFileChooser()
+        chooser.dialogTitle = title
+        chooser.fileSelectionMode = JFileChooser.FILES_ONLY
+        if (extensions.isNotEmpty()) chooser.fileFilter = FileNameExtensionFilter("配置 (${extensions.joinToString("/")})", *extensions.toTypedArray())
+        return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+    }
+
     fun pickFolder(title: String): File? {
         val chooser = JFileChooser()
         chooser.dialogTitle = title
