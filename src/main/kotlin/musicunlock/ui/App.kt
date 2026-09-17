@@ -110,7 +110,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
@@ -374,6 +373,7 @@ fun showWindow() {
     ) {
         LaunchedEffect(Unit) {
             window.minimumSize = Dimension(980, 680)
+            DesktopIntegration.installApplicationIcon(window)
         }
         LaunchedEffect(Unit) {
             while (true) {
@@ -1336,37 +1336,6 @@ private fun ResetSettingsOverlay(onClose: () -> Unit, onConfirm: () -> Unit) {
 // ============================================================
 //  品牌与摘要
 // ============================================================
-
-/** 品牌徽记:橙渐变圆角方块 + ♪ 音符字形 + 顶部内高光(与设计稿一致)。 */
-@Composable
-private fun LogoMark(side: Dp) {
-    val t = cleanTokens()
-    val corner = side * 14f / 48f
-    Box(
-        modifier = Modifier
-            .size(side)
-            .shadow(6.dp, RoundedCornerShape(corner), spotColor = t.primary.copy(alpha = 0.28f), ambientColor = t.primary.copy(alpha = 0.20f))
-            .clip(RoundedCornerShape(corner))
-            .background(Brush.linearGradient(listOf(Color(0xFFFF8A3D), t.primary)))
-            .drawBehind {
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.30f), Color.Transparent),
-                        startY = 0f,
-                        endY = size.height * 0.45f,
-                    ),
-                )
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            "♪",
-            fontSize = (side.value * 27f / 48f).sp,
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-        )
-    }
-}
 
 @Composable
 private fun Pill(text: String, emphasize: Boolean) {

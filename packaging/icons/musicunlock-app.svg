@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="168" y1="128" x2="880" y2="940" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#342A26"/>
+      <stop offset="1" stop-color="#15110F"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="294" y1="322" x2="730" y2="714" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDFC"/>
+      <stop offset="1" stop-color="#F2E8E1"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="438" y1="548" x2="586" y2="622" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF8A3D"/>
+      <stop offset="1" stop-color="#EA580C"/>
+    </linearGradient>
+  </defs>
+  <rect x="96" y="96" width="832" height="832" rx="208" fill="url(#bg)"/>
+  <rect x="102" y="102" width="820" height="820" rx="202" stroke="#FFFFFF" stroke-opacity=".07" stroke-width="4"/>
+  <path d="M294 714V365C294 336 331 322 351 343L454 446C488 480 536 480 570 446L673 343C693 322 730 336 730 365V714" stroke="url(#ink)" stroke-width="96" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M438 548L512 622L586 548" stroke="url(#accent)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
