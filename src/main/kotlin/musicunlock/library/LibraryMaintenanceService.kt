@@ -29,11 +29,29 @@ class LibraryAuditReport(
 
 class RenameOutcome(val renamed: Int, val failed: List<String>)
 
+data class EditableTags(
+    val title: String? = null,
+    val artist: String? = null,
+    val album: String? = null,
+    val albumArtist: String? = null,
+    val trackNumber: Int? = null,
+    val discNumber: Int? = null,
+    val year: Int? = null,
+    val genre: String? = null,
+    val composer: String? = null,
+    val isrc: String? = null,
+    val lyrics: String? = null,
+    val cover: ByteArray? = null,
+    val rating: Int? = null,
+    val favorite: Boolean? = null,
+)
+
 /** 本地曲库扫描、缺失检查、批量改名、标签修复与跨平台匹配。 */
 class LibraryMaintenanceService(
     private val index: LibraryIndex = LibraryIndex(),
 ) {
-    fun scan(directory: File, hash: Boolean = true): LibraryScanReport = index.scan(directory, hash)
+    fun scan(directory: File, hash: Boolean = true, analyze: Boolean = false): LibraryScanReport =
+        index.scan(directory, hash = hash || analyze, analyze = analyze)
 
     fun audit(directory: File? = null): LibraryAuditReport {
         val entries = index.all().filter { directory == null || File(it.path).absolutePath.startsWith(directory.absolutePath) }
@@ -125,6 +143,37 @@ class LibraryMaintenanceService(
         return issues.mapNotNull { entries[it.path] }.count { repairTags(it, fetchOnline) }
     }
 
+    fun updateTags(entry: LibraryEntry, tags: EditableTags): Boolean {
+        val file = File(entry.path)
+        if (!file.isFile) return false
+        val ok = TagWriter.embed(
+            file,
+            AudioTagData(
+                title = tags.title?.trim()?.takeIf(String::isNotBlank),
+                artist = tags.artist?.trim()?.takeIf(String::isNotBlank),
+                album = tags.album?.trim()?.takeIf(String::isNotBlank),
+                albumArtist = tags.albumArtist?.trim()?.takeIf(String::isNotBlank),
+                trackNumber = tags.trackNumber,
+                discNumber = tags.discNumber,
+                year = tags.year,
+                genre = tags.genre?.trim()?.takeIf(String::isNotBlank),
+                composer = tags.composer?.trim()?.takeIf(String::isNotBlank),
+                isrc = tags.isrc?.trim()?.takeIf(String::isNotBlank),
+                lyrics = tags.lyrics?.trim()?.takeIf(String::isNotBlank),
+                cover = tags.cover,
+                platform = entry.platform,
+                sourceSongId = entry.sourceSongId,
+                rating = tags.rating,
+                favorite = tags.favorite,
+            ),
+        )
+        if (ok) index.upsert(file, entry.platform, entry.sourceSongId, hash = false)
+        return ok
+    }
+
+    fun updateTagsBatch(entries: List<LibraryEntry>, tags: EditableTags): Int =
+        entries.count { entry -> updateTags(entry, tags) }
+
     fun updateTags(
         entry: LibraryEntry,
         title: String?,
@@ -136,6 +185,9 @@ class LibraryMaintenanceService(
         isrc: String?,
         lyrics: String? = null,
         cover: ByteArray? = null,
+        albumArtist: String? = null,
+        trackNumber: Int? = null,
+        discNumber: Int? = null,
     ): Boolean {
         val file = File(entry.path)
         if (!file.isFile) return false
@@ -145,6 +197,9 @@ class LibraryMaintenanceService(
                 title = title?.trim()?.takeIf(String::isNotBlank),
                 artist = artist?.trim()?.takeIf(String::isNotBlank),
                 album = album?.trim()?.takeIf(String::isNotBlank),
+                albumArtist = albumArtist?.trim()?.takeIf(String::isNotBlank),
+                trackNumber = trackNumber,
+                discNumber = discNumber,
                 year = year,
                 genre = genre?.trim()?.takeIf(String::isNotBlank),
                 composer = composer?.trim()?.takeIf(String::isNotBlank),
@@ -170,8 +225,11 @@ class LibraryMaintenanceService(
         isrc: String?,
         lyrics: String? = null,
         cover: ByteArray? = null,
+        albumArtist: String? = null,
+        trackNumber: Int? = null,
+        discNumber: Int? = null,
     ): Int = entries.count { entry ->
-        updateTags(entry, title, artist, album, year, genre, composer, isrc, lyrics, cover)
+        updateTags(entry, title, artist, album, year, genre, composer, isrc, lyrics, cover, albumArtist, trackNumber, discNumber)
     }
 
     fun removeDuplicates(groups: List<List<LibraryEntry>>): Int {
@@ -226,8 +284,17 @@ class LibraryMaintenanceService(
         artists = artist?.split('/', '、', ',', '；', ';')?.map(String::trim)?.filter(String::isNotBlank).orEmpty(),
         albumName = album,
         coverUrl = null,
-        metadata = mapOf("localPath" to path),
+        metadata = buildMap {
+            put("localPath", path)
+            fingerprint?.let { put("fingerprint", it) }
+        },
         durationSeconds = durationSeconds,
+        trackNumber = trackNumber,
+        discNumber = discNumber,
+        year = year,
+        genre = genre,
+        composer = composer,
+        isrc = isrc,
     )
 
     private fun normalize(value: String): String = buildString {

@@ -112,16 +112,27 @@ class SettingsRepository internal constructor(
         secretCache[key] = value
     }
 
+    private fun <T> List<T>?.orEmptySafe(): List<T> = orEmpty()
+
+    private fun <K, V> Map<K, V>?.orEmptySafe(): Map<K, V> = orEmpty()
+
+    private fun <T : Enum<T>> T?.orEnumDefault(entries: Iterable<T>, default: T): T =
+        this?.takeIf { it in entries } ?: default
+
     private fun normalize(settings: AppSettings?): AppSettings {
         val source = settings ?: AppSettings()
+        val localPolicy = source.localExistingFilePolicy.orEnumDefault(
+            DownloadExistingPolicy.entries,
+            DownloadExistingPolicy.SKIP,
+        )
         return source.copy(
-            outputDir = source.outputDir.takeIf { it.isNotBlank() } ?: defaultOutputDir(),
+            outputDir = source.outputDir?.takeIf { it.isNotBlank() } ?: defaultOutputDir(),
+            outputFormat = source.outputFormat.orEnumDefault(OutputFormat.entries, OutputFormat.ORIGINAL),
             bitrateKbps = source.bitrateKbps.takeIf { it in outputBitrates } ?: 320,
-            localOutputTemplate = source.localOutputTemplate.trim().takeIf { it.isNotEmpty() } ?: "{title}",
-            localExistingFilePolicy = if (!source.skipExisting && source.localExistingFilePolicy == DownloadExistingPolicy.SKIP) {
-                DownloadExistingPolicy.OVERWRITE
-            } else {
-                source.localExistingFilePolicy
+            localOutputTemplate = source.localOutputTemplate?.trim()?.takeIf { it.isNotEmpty() } ?: "{title}",
+            localExistingFilePolicy = when {
+                !source.skipExisting && localPolicy == DownloadExistingPolicy.SKIP -> DownloadExistingPolicy.OVERWRITE
+                else -> localPolicy
             },
             windowWidth = source.windowWidth.coerceAtLeast(980),
             windowHeight = source.windowHeight.coerceAtLeast(680),
@@ -140,34 +151,90 @@ class SettingsRepository internal constructor(
             downloadTimeoutSeconds = source.downloadTimeoutSeconds.coerceIn(5L, 3_600L),
             connectTimeoutSeconds = source.connectTimeoutSeconds.coerceIn(3L, 300L),
             proxyUrl = source.proxyUrl?.trim()?.takeIf { it.isNotEmpty() },
-            outputTemplate = source.outputTemplate.trim().takeIf { it.isNotEmpty() } ?: "{artist}/{album}/{title}",
-            subscriptions = source.subscriptions
-                .filter { it.id.isNotBlank() && it.platform.isNotBlank() && it.playlistId.isNotBlank() }
+            qualityStrategy = source.qualityStrategy.orEnumDefault(QualityStrategy.entries, QualityStrategy.HIGHEST),
+            existingFilePolicy = source.existingFilePolicy.orEnumDefault(
+                DownloadExistingPolicy.entries,
+                DownloadExistingPolicy.SKIP,
+            ),
+            outputTemplate = source.outputTemplate?.trim()?.takeIf { it.isNotEmpty() } ?: "{artist}/{album}/{title}",
+            lyricsMode = source.lyricsMode.orEnumDefault(LyricsMode.entries, LyricsMode.EMBED),
+            subscriptions = source.subscriptions.orEmptySafe()
+                .filter { !it.id.isNullOrBlank() && !it.platform.isNullOrBlank() && !it.playlistId.isNullOrBlank() }
                 .map {
                     it.copy(
-                        outputDir = it.outputDir.takeIf(String::isNotBlank) ?: source.outputDir,
+                        outputDir = it.outputDir?.takeIf(String::isNotBlank) ?: source.outputDir,
                         syncIntervalMinutes = it.syncIntervalMinutes.coerceIn(5, 10_080),
                         lastTrackCount = it.lastTrackCount.coerceAtLeast(0),
+                        metadata = it.metadata.orEmptySafe(),
                     )
                 },
-            watchFolders = source.watchFolders.map(String::trim).filter(String::isNotEmpty).distinct(),
-            automationRules = source.automationRules
-                .filter { it.id.isNotBlank() && it.inputDir.isNotBlank() && it.outputDir.isNotBlank() }
+            watchFolders = source.watchFolders.orEmptySafe().map(String::trim).filter(String::isNotEmpty).distinct(),
+            automationRules = source.automationRules.orEmptySafe()
+                .filter { !it.id.isNullOrBlank() && !it.inputDir.isNullOrBlank() && !it.outputDir.isNullOrBlank() }
                 .map {
                     it.copy(
-                        name = it.name.trim().takeIf(String::isNotEmpty) ?: "自动转换",
-                        outputTemplate = it.outputTemplate.trim().takeIf(String::isNotEmpty) ?: "{title}",
-                        minBytes = it.minBytes.coerceAtLeast(0L),
-                        extensions = it.extensions.map { ext -> ext.trim().lowercase().removePrefix(".") }
+                        name = it.name?.trim()?.takeIf(String::isNotEmpty) ?: "自动转换",
+                        outputFormat = it.outputFormat.orEnumDefault(OutputFormat.entries, OutputFormat.ORIGINAL),
+                        existingFilePolicy = it.existingFilePolicy.orEnumDefault(
+                            DownloadExistingPolicy.entries,
+                            DownloadExistingPolicy.SKIP,
+                        ),
+                        outputTemplate = it.outputTemplate?.trim()?.takeIf(String::isNotEmpty) ?: "{title}",
+                        extensions = it.extensions.orEmptySafe().map { ext -> ext.trim().lowercase().removePrefix(".") }
                             .filter(String::isNotEmpty)
                             .distinct(),
+                        priority = it.priority.coerceIn(-10_000, 10_000),
+                        minBytes = it.minBytes.coerceAtLeast(0L),
+                        maxBytes = it.maxBytes?.takeIf { value -> value >= 0L },
+                        scheduleStartMinute = it.scheduleStartMinute?.coerceIn(0, 1_439),
+                        scheduleEndMinute = it.scheduleEndMinute?.coerceIn(0, 1_439),
+                        daysOfWeek = it.daysOfWeek.orEmptySafe().map { day -> day.coerceIn(1, 7) }.distinct(),
+                        webhookUrl = it.webhookUrl?.trim()?.takeIf(String::isNotEmpty),
+                        postCommand = it.postCommand?.trim()?.takeIf(String::isNotEmpty),
+                        postCommandArgs = it.postCommandArgs.orEmptySafe().map(String::trim).filter(String::isNotEmpty),
                     )
                 },
-            localApiPort = source.localApiPort.coerceIn(1024, 65_535),
+            playerBassBoostDb = source.playerBassBoostDb.coerceIn(-12, 12),
+            playerTrebleBoostDb = source.playerTrebleBoostDb.coerceIn(-12, 12),
+            playerFadeSeconds = source.playerFadeSeconds.coerceIn(0, 12),
+            mediaServers = source.mediaServers.orEmptySafe()
+                .filter { !it.id.isNullOrBlank() && !it.baseUrl.isNullOrBlank() }
+                .map {
+                    val type = it.type.orEnumDefault(MediaServerType.entries, MediaServerType.PLEX)
+                    it.copy(
+                        name = it.name?.trim()?.takeIf(String::isNotEmpty) ?: type.name,
+                        type = type,
+                        baseUrl = it.baseUrl?.trim()?.trimEnd('/').orEmpty(),
+                        username = it.username?.trim()?.takeIf(String::isNotEmpty),
+                        libraryId = it.libraryId?.trim()?.takeIf(String::isNotEmpty),
+                    )
+                },
+            librarySyncProfiles = source.librarySyncProfiles.orEmptySafe()
+                .filter { !it.id.isNullOrBlank() && !it.name.isNullOrBlank() }
+                .map {
+                    it.copy(
+                        name = it.name?.trim().orEmpty(),
+                        destinationType = it.destinationType.orEnumDefault(
+                            SyncDestinationType.entries,
+                            SyncDestinationType.LOCAL_FOLDER,
+                        ),
+                        localPath = it.localPath?.trim()?.takeIf(String::isNotEmpty),
+                        remoteUrl = it.remoteUrl?.trim()?.takeIf(String::isNotEmpty),
+                        remoteDir = it.remoteDir?.trim()?.trim('/')?.ifBlank { "MusicUnlock" } ?: "MusicUnlock",
+                        mode = it.mode.orEnumDefault(SyncMode.entries, SyncMode.UPLOAD_ONLY),
+                        bitrateKbps = it.bitrateKbps.coerceIn(64, 512),
+                        outputTemplate = it.outputTemplate?.trim()?.ifBlank { "{artist}/{album}/{title}" } ?: "{artist}/{album}/{title}",
+                        conflictPolicy = it.conflictPolicy.orEnumDefault(
+                            SyncConflictPolicy.entries,
+                            SyncConflictPolicy.KEEP_NEWER,
+                        ),
+                    )
+                },
+            localApiPort = if (source.localApiPort == 0) 17_893 else source.localApiPort.coerceIn(1024, 65_535),
             localApiToken = source.localApiToken?.trim()?.takeIf(String::isNotEmpty),
             webdavUrl = source.webdavUrl?.trim()?.takeIf(String::isNotEmpty),
             webdavUsername = source.webdavUsername?.trim()?.takeIf(String::isNotEmpty),
-            webdavRemoteFile = source.webdavRemoteFile.trim().takeIf(String::isNotEmpty) ?: "MusicUnlock-backup.zip",
+            webdavRemoteFile = source.webdavRemoteFile?.trim()?.takeIf(String::isNotEmpty) ?: "MusicUnlock-backup.zip",
         )
     }
 

@@ -127,6 +127,27 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun `旧自动化规则缺少新字段时仍保留现有设置`() {
+        val dir = Files.createTempDirectory("musicunlock-settings-rule-migration").toFile()
+        val file = dir.resolve("config")
+        try {
+            file.writeText(
+                """{"outputDir":"/tmp/music","dedup":true,"automationRules":[{"id":"rule","name":"旧规则","inputDir":"/tmp/in","outputDir":"/tmp/out"}]}""",
+            )
+
+            val loaded = SettingsRepository(file).load()
+
+            assertEquals("/tmp/music", loaded.outputDir)
+            assertEquals(true, loaded.dedup)
+            assertEquals(1, loaded.automationRules.size)
+            assertEquals("旧规则", loaded.automationRules.single().name)
+            assertEquals(OutputFormat.ORIGINAL, loaded.automationRules.single().outputFormat)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `配置文件不保存明文 Cookie`() {
         val dir = Files.createTempDirectory("musicunlock-secret-settings").toFile()
         val file = dir.resolve("config")

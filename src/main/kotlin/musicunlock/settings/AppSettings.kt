@@ -72,6 +72,41 @@ data class PlaylistSubscription(
     val metadata: Map<String, String> = emptyMap(),
 )
 
+enum class SyncDestinationType { LOCAL_FOLDER, WEBDAV }
+
+enum class SyncMode { UPLOAD_ONLY, MIRROR, TWO_WAY }
+
+enum class SyncConflictPolicy { KEEP_NEWER, KEEP_LOCAL, KEEP_REMOTE, KEEP_BOTH }
+
+enum class MediaServerType { PLEX, JELLYFIN, NAVIDROME, SUBSONIC }
+
+data class MediaServerConfig(
+    val id: String,
+    val name: String,
+    val type: MediaServerType,
+    val baseUrl: String,
+    val username: String? = null,
+    val libraryId: String? = null,
+    val enabled: Boolean = true,
+)
+
+data class LibrarySyncProfile(
+    val id: String,
+    val name: String,
+    val destinationType: SyncDestinationType,
+    val localPath: String? = null,
+    val remoteUrl: String? = null,
+    val remoteDir: String = "MusicUnlock",
+    val username: String? = null,
+    val enabled: Boolean = true,
+    val mode: SyncMode = SyncMode.UPLOAD_ONLY,
+    val outputFormat: OutputFormat? = null,
+    val bitrateKbps: Int = 320,
+    val outputTemplate: String = "{artist}/{album}/{title}",
+    val mirrorDeletes: Boolean = false,
+    val conflictPolicy: SyncConflictPolicy = SyncConflictPolicy.KEEP_NEWER,
+)
+
 data class AutomationRule(
     val id: String,
     val name: String,
@@ -83,8 +118,18 @@ data class AutomationRule(
     val outputTemplate: String = "{title}",
     val existingFilePolicy: DownloadExistingPolicy = DownloadExistingPolicy.SKIP,
     val minBytes: Long = 0L,
+    val maxBytes: Long? = null,
     val extensions: List<String> = emptyList(),
+    val fileNamePattern: String? = null,
+    val regexPattern: Boolean = false,
+    val priority: Int = 0,
+    val scheduleStartMinute: Int? = null,
+    val scheduleEndMinute: Int? = null,
+    val daysOfWeek: List<Int> = emptyList(),
     val trashSourceOnSuccess: Boolean = false,
+    val webhookUrl: String? = null,
+    val postCommand: String? = null,
+    val postCommandArgs: List<String> = emptyList(),
 )
 
 /** 接收一次纯设置变更，由调用方在最新配置上应用。 */
@@ -140,6 +185,12 @@ data class AppSettings(
     val subscriptionNotifications: Boolean = true,
     val autoDownloadUpdates: Boolean = false,
     val automationRules: List<AutomationRule> = emptyList(),
+    val librarySyncProfiles: List<LibrarySyncProfile> = emptyList(),
+    val mediaServers: List<MediaServerConfig> = emptyList(),
+    val playerLoudnessNormalization: Boolean = false,
+    val playerBassBoostDb: Int = 0,
+    val playerTrebleBoostDb: Int = 0,
+    val playerFadeSeconds: Int = 2,
     val localApiEnabled: Boolean = false,
     val localApiPort: Int = 17_893,
     val localApiToken: String? = null,

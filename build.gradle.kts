@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.musicunlock"
-version = "2.1.0"
+version = "2.2.0"
 
 val ffmpegVersion = "7.1-1.5.11"
 val ffmpegPlatform = run {
@@ -54,6 +54,8 @@ dependencies {
     implementation("com.google.code.gson:gson:2.13.1")
     implementation("com.google.zxing:core:3.5.3")
     implementation("net.jthink:jaudiotagger:3.0.1")
+    implementation("org.xerial:sqlite-jdbc:3.46.1.3")
+    implementation("com.github.kwhat:jnativehook:2.2.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
     runtimeOnly("org.bytedeco:ffmpeg:$ffmpegVersion:$ffmpegPlatform") {
         isTransitive = false
@@ -81,10 +83,10 @@ compose.desktop {
 
         nativeDistributions {
             // 运行时需要 java.net.http（网易云/QQ 音乐接口与浏览器登录的 CDP 通信）
-            modules("java.net.http", "jdk.httpserver")
+            modules("java.sql", "java.net.http", "jdk.httpserver")
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "MusicUnlock"
-            packageVersion = "2.1.0"
+            packageVersion = "2.2.0"
             description = "MusicUnlock - convert encrypted music files to open audio formats"
             vendor = "MusicUnlock"
             licenseFile.set(project.file("LICENSE"))

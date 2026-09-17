@@ -22,7 +22,7 @@ object LibraryExportService {
 
     fun exportCsv(entries: List<LibraryEntry>, target: File): Int {
         target.parentFile?.mkdirs()
-        val header = listOf("path", "title", "artist", "album", "durationSeconds", "platform", "format", "bitrateKbps", "hasCover", "hasLyrics")
+        val header = listOf("path", "title", "artist", "album", "albumArtist", "trackNumber", "discNumber", "year", "genre", "composer", "isrc", "durationSeconds", "platform", "format", "bitrateKbps", "hasCover", "hasLyrics", "isFavorite", "rating", "playCount")
         val lines = mutableListOf(header.joinToString(",") { csv(it) })
         entries.forEach { entry ->
             lines += listOf(
@@ -30,12 +30,22 @@ object LibraryExportService {
                 entry.title.orEmpty(),
                 entry.artist.orEmpty(),
                 entry.album.orEmpty(),
+                entry.albumArtist.orEmpty(),
+                entry.trackNumber?.toString().orEmpty(),
+                entry.discNumber?.toString().orEmpty(),
+                entry.year?.toString().orEmpty(),
+                entry.genre.orEmpty(),
+                entry.composer.orEmpty(),
+                entry.isrc.orEmpty(),
                 entry.durationSeconds?.toString().orEmpty(),
                 entry.platform.orEmpty(),
                 entry.format.orEmpty(),
                 entry.bitRateKbps?.toString().orEmpty(),
                 entry.hasCover.toString(),
                 entry.hasLyrics.toString(),
+                entry.isFavorite.toString(),
+                entry.rating.toString(),
+                entry.playCount.toString(),
             ).joinToString(",") { csv(it) }
         }
         target.writeText(lines.joinToString(System.lineSeparator(), postfix = System.lineSeparator()))

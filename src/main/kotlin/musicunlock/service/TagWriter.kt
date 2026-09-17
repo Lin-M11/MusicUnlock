@@ -30,6 +30,8 @@ data class AudioTagData(
     val platform: String? = null,
     val sourceSongId: String? = null,
     val quality: String? = null,
+    val rating: Int? = null,
+    val favorite: Boolean? = null,
 )
 
 /**
@@ -76,6 +78,13 @@ object TagWriter {
             set(tag, FieldKey.ISRC, tags.isrc)
             set(tag, FieldKey.LYRICS, tags.lyrics)
             set(tag, FieldKey.QUALITY, tags.quality)
+            if (tags.rating != null) {
+                runCatching {
+                    if (tags.rating > 0) tag.setField(FieldKey.RATING, tags.rating.toString())
+                    else tag.deleteField(FieldKey.RATING)
+                }
+            }
+            set(tag, FieldKey.CUSTOM2, tags.favorite?.let { if (it) "favorite=1" else "favorite=0" })
             if (!tags.platform.isNullOrBlank() || !tags.sourceSongId.isNullOrBlank()) {
                 set(tag, FieldKey.CUSTOM1, listOfNotNull(tags.platform, tags.sourceSongId).joinToString(":"))
             }

@@ -17,6 +17,9 @@ data class AudioQualityReport(
     val peak: Double? = null,
     val rms: Double? = null,
     val clippingRatio: Double? = null,
+    val fingerprint: String? = null,
+    val spectralCutoffHz: Int? = null,
+    val dynamicRangeDb: Double? = null,
     val score: Int,
     val issues: List<String>,
 )
@@ -33,11 +36,16 @@ object AudioQualityInspector {
         val sampleRate = runCatching { header?.sampleRateAsNumber }.getOrNull()
         val channels = runCatching { header?.channels?.filter(Char::isDigit)?.toIntOrNull() }.getOrNull()
         val effective = duration?.takeIf { it > 0 }?.let { seconds -> ((file.length() * 8L) / seconds / 1_000L).toInt() }
+        val analysis = runCatching { AudioAnalysisService.analyze(file) }.getOrNull()
 
         if (audio == null) issues += "无法解析音频，文件可能损坏"
         if (duration == null || duration <= 0) issues += "无法读取有效时长"
         if (bitRate != null && bitRate in 1..127) issues += "码率低于 128k：${bitRate}k"
         if (isLosslessExtension(file.extension) && (bitRate ?: effective ?: Int.MAX_VALUE) < 500) issues += "疑似伪无损或升采样文件"
+        if (isLosslessExtension(file.extension) && (analysis?.spectralCutoffHz ?: Int.MAX_VALUE) < 19_000) {
+            issues += "疑似由有损音源转码：频谱截止约 ${analysis?.spectralCutoffHz ?: 0} Hz"
+        }
+        if ((analysis?.dynamicRangeDb ?: Double.MAX_VALUE) < 5.0) issues += "动态范围偏低，可能经过重度压限"
         if (file.length() < 64L * 1024L && (duration ?: 0) > 30) issues += "文件体积与时长不匹配"
 
         val pcm = inspectPcm(file)
@@ -66,9 +74,12 @@ object AudioQualityInspector {
             effectiveBitRateKbps = effective,
             sampleRateHz = sampleRate,
             channels = channels,
-            peak = pcm?.peak,
+            peak = analysis?.truePeak ?: pcm?.peak,
             rms = pcm?.rms,
             clippingRatio = pcm?.clippingRatio,
+            fingerprint = analysis?.fingerprint,
+            spectralCutoffHz = analysis?.spectralCutoffHz,
+            dynamicRangeDb = analysis?.dynamicRangeDb,
             score = score.coerceIn(0, 100),
             issues = issues,
         )
