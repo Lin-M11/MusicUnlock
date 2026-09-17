@@ -42,9 +42,11 @@ object BundledFfmpeg {
         }
         val process = builder.start()
         try {
-            process.inputStream.bufferedReader().readText()
+            val output = process.inputStream.bufferedReader().readText()
             process.waitFor()
-            process.exitValue() == 0
+            val ok = process.exitValue() == 0
+            if (!ok) println("内置 ffmpeg 运行时自检失败：${output.trim().take(800)}")
+            ok
         } finally {
             if (process.isAlive) process.destroyForcibly()
         }
