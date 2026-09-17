@@ -80,6 +80,15 @@ class OnlineDownloadOutcome(
 /** 提交下载任务的结果；只有接入任务面板的平台需要实现。 */
 data class SubmitOutcome(val ok: Boolean, val message: String)
 
+data class ProviderCapabilities(
+    val search: Boolean = true,
+    val playlists: Boolean = true,
+    val lyrics: Boolean = true,
+    val resumeDownload: Boolean = false,
+    val lossless: Boolean = true,
+    val directPlayback: Boolean = true,
+)
+
 /**
  * 在线音乐平台统一接口。
  *
@@ -88,6 +97,10 @@ data class SubmitOutcome(val ok: Boolean, val message: String)
  */
 interface OnlineMusicProvider {
     val platform: MusicPlatform
+
+    fun capabilities(): ProviderCapabilities = ProviderCapabilities()
+
+    fun healthCheck(): Result<Unit> = runCatching { account() }
 
     fun restoreSession(cookieHeader: String): MusicAccount
     fun exportSessionCookie(): String?

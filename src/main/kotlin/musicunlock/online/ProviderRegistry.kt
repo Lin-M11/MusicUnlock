@@ -4,6 +4,8 @@ import musicunlock.kugou.KugouApi
 import musicunlock.kuwo.KuwoApi
 import musicunlock.ncm.NeteaseProvider
 import musicunlock.qq.QqMusicProvider
+import java.io.File
+import java.net.URLClassLoader
 import java.util.ServiceLoader
 
 /** 外部平台包通过 ServiceLoader 提供工厂即可接入统一队列和界面。 */
@@ -20,11 +22,23 @@ object ProviderRegistry {
         KuwoApi,
     )
 
-    val all: List<OnlineMusicProvider> = (
-        builtIns + ServiceLoader.load(OnlineMusicProviderFactory::class.java).mapNotNull {
-            runCatching { it.create() }.getOrNull()
-        }
-    ).associateBy { it.platform.id }.values.toList()
+    val all: List<OnlineMusicProvider> = loadExternal().let { external ->
+        (builtIns + external.mapNotNull { runCatching { it.create() }.getOrNull() })
+            .associateBy { it.platform.id }
+            .values
+            .toList()
+    }
+
+    private fun loadExternal(): List<OnlineMusicProviderFactory> = runCatching {
+        val pluginDir = File(System.getProperty("user.home"), ".musicunlock/plugins")
+        if (!pluginDir.isDirectory) return emptyList()
+        val jars = pluginDir.listFiles { file -> file.isFile && file.extension.equals("jar", ignoreCase = true) }
+            ?.map { it.toURI().toURL() }
+            ?.toTypedArray()
+            ?: return emptyList()
+        val loader = URLClassLoader(jars, ProviderRegistry::class.java.classLoader)
+        ServiceLoader.load(OnlineMusicProviderFactory::class.java, loader).toList()
+    }.getOrDefault(emptyList())
 
     fun find(platformId: String): OnlineMusicProvider? =
         all.firstOrNull { it.platform.id.equals(platformId, ignoreCase = true) }

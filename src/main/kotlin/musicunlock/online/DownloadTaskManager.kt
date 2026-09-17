@@ -14,6 +14,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import musicunlock.diagnostics.Diagnostics
 import musicunlock.library.LibraryIndex
+import musicunlock.library.LibraryMaintenanceService
+import musicunlock.sync.CrossPlatformMatcher
 import musicunlock.settings.AppSettings
 import java.io.File
 import java.nio.file.Files
@@ -27,6 +29,14 @@ class DownloadTaskManager(
     private val settingsProvider: () -> AppSettings,
     private val taskFile: File = defaultTaskFile(),
     private val providerResolver: (String) -> OnlineMusicProvider? = ProviderRegistry::find,
+    private val fallbackResolver: ((OnlineMusicProvider, MusicSong) -> List<Pair<OnlineMusicProvider, MusicSong>>)? = { provider, song ->
+        CrossPlatformMatcher(LibraryMaintenanceService(library)).find(
+            source = song,
+            targets = MusicPlatform.entries.filter { it != provider.platform },
+        ).mapNotNull { match ->
+            ProviderRegistry.find(match.platform.id)?.let { fallbackProvider -> fallbackProvider to match.song }
+        }
+    },
 ) {
     private val gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -55,6 +65,7 @@ class DownloadTaskManager(
         preferences: DownloadPreferences,
         playlistName: String? = null,
         subscriptionId: String? = null,
+        fallbackAttempted: Boolean = false,
     ): String {
         if (library.contains(song, provider.platform.id) && preferences.existingFilePolicy == musicunlock.settings.DownloadExistingPolicy.SKIP) {
             val id = UUID.randomUUID().toString()
@@ -67,6 +78,7 @@ class DownloadTaskManager(
                     preferences = preferences,
                     playlistName = playlistName,
                     subscriptionId = subscriptionId,
+                    fallbackAttempted = fallbackAttempted,
                     state = DownloadTaskState.SKIPPED,
                     message = "本地曲库中已有该歌曲",
                 ),
@@ -83,6 +95,7 @@ class DownloadTaskManager(
                 preferences = preferences,
                 playlistName = playlistName,
                 subscriptionId = subscriptionId,
+                fallbackAttempted = fallbackAttempted,
             ),
         )
         pump()
@@ -96,7 +109,8 @@ class DownloadTaskManager(
         preferences: DownloadPreferences,
         playlistName: String? = null,
         subscriptionId: String? = null,
-    ): List<String> = songs.map { enqueue(provider, it, outputDir, preferences, playlistName, subscriptionId) }
+        fallbackAttempted: Boolean = false,
+    ): List<String> = songs.map { enqueue(provider, it, outputDir, preferences, playlistName, subscriptionId, fallbackAttempted) }
 
     fun pause(id: String) {
         val task = find(id) ?: return
@@ -324,6 +338,37 @@ class DownloadTaskManager(
                     delay(backoff(task.preferences, lastAttempt))
                     task = find(id) ?: return
                     continue
+                }
+                if (!task.fallbackAttempted && classified.kind in setOf(
+                        DownloadErrorKind.AUTH,
+                        DownloadErrorKind.RIGHTS,
+                        DownloadErrorKind.NETWORK,
+                        DownloadErrorKind.SERVER,
+                        DownloadErrorKind.UNKNOWN,
+                    )
+                ) {
+                    val alternative = fallbackResolver?.invoke(provider, task.song)?.firstOrNull()
+                    if (alternative != null) {
+                        enqueue(
+                            provider = alternative.first,
+                            song = alternative.second,
+                            outputDir = File(task.outputDir),
+                            preferences = task.preferences,
+                            playlistName = task.playlistName,
+                            subscriptionId = task.subscriptionId,
+                            fallbackAttempted = true,
+                        )
+                        update(id) {
+                            it.copy(
+                                state = DownloadTaskState.SKIPPED,
+                                message = "当前平台不可用，已转由 ${alternative.first.platform.displayName} 下载",
+                                errorKind = classified.kind,
+                                speedBytesPerSecond = 0L,
+                                updatedAt = System.currentTimeMillis(),
+                            )
+                        }
+                        return
+                    }
                 }
                 update(id) {
                     it.copy(

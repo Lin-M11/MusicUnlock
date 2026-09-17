@@ -44,6 +44,7 @@ import musicunlock.library.LibraryIndex
 import musicunlock.online.DownloadTaskManager
 import musicunlock.service.ConversionTaskManager
 import musicunlock.settings.AppSettings
+import musicunlock.settings.AutomationRule
 import musicunlock.settings.DownloadExistingPolicy
 import musicunlock.settings.LyricsMode
 import musicunlock.settings.OutputFormat
@@ -53,6 +54,7 @@ import musicunlock.settings.SettingsUpdate
 import musicunlock.settings.extension
 import musicunlock.settings.outputBitrates
 import musicunlock.settings.usesBitrate
+import musicunlock.sync.WebDavSyncService
 import musicunlock.update.ReleaseInfo
 import musicunlock.update.UpdateChecker
 import musicunlock.update.UpdateDownloader
@@ -60,6 +62,7 @@ import musicunlock.update.UpdateInstaller
 import musicunlock.update.currentPlatform
 import java.awt.Desktop
 import java.io.File
+import java.util.UUID
 
 @Composable
 internal fun SettingsPage(
@@ -81,6 +84,11 @@ internal fun SettingsPage(
     var relinkFrom by remember { mutableStateOf("") }
     var relinkTo by remember { mutableStateOf("") }
     var update by remember { mutableStateOf<ReleaseInfo?>(null) }
+    var apiToken by remember(settings.localApiToken) { mutableStateOf(settings.localApiToken.orEmpty()) }
+    var webdavUrl by remember(settings.webdavUrl) { mutableStateOf(settings.webdavUrl.orEmpty()) }
+    var webdavUsername by remember(settings.webdavUsername) { mutableStateOf(settings.webdavUsername.orEmpty()) }
+    var webdavPassword by remember { mutableStateOf("") }
+    var webdavRemoteFile by remember(settings.webdavRemoteFile) { mutableStateOf(settings.webdavRemoteFile) }
 
     fun exportBackup() {
         val target = FileDialogs.saveFile("导出完整备份", "MusicUnlock-backup.zip") ?: return
@@ -212,6 +220,72 @@ internal fun SettingsPage(
                 SettingsAction("添加监听文件夹") {
                     FileDialogs.pickFolder("选择自动转换文件夹")?.let { picked ->
                         onUpdateSettings { current -> current.copy(watchFolders = (current.watchFolders + picked.absolutePath).distinct()) }
+                    }
+                }
+                SettingsSpacer()
+                SettingsLabel("自动化规则")
+                settings.automationRules.forEach { rule ->
+                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(rule.name, fontSize = 12.sp, color = t.text, maxLines = 1)
+                            Text("${rule.inputDir} → ${rule.outputDir} · ${rule.outputFormat.name}", fontSize = 10.5.sp, color = t.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        SettingsAction("移除") {
+                            onUpdateSettings { current -> current.copy(automationRules = current.automationRules.filterNot { it.id == rule.id }) }
+                        }
+                    }
+                }
+                SettingsAction("添加默认规则") {
+                    val input = settings.watchFolders.firstOrNull() ?: settings.outputDir
+                    val rule = AutomationRule(
+                        id = UUID.randomUUID().toString(),
+                        name = "默认转换规则",
+                        inputDir = input,
+                        outputDir = settings.outputDir,
+                        outputFormat = settings.outputFormat,
+                        bitrateKbps = settings.bitrateKbps,
+                        outputTemplate = settings.localOutputTemplate,
+                        existingFilePolicy = settings.localExistingFilePolicy,
+                        extensions = musicunlock.core.Formats.supportedExtensions(),
+                    )
+                    onUpdateSettings { current -> current.copy(automationRules = current.automationRules + rule) }
+                }
+                SettingsSpacer()
+                ToggleRow("守护进程启用本机 API", settings.localApiEnabled) { value -> onUpdateSettings { it.copy(localApiEnabled = value) } }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    SettingsTextField(apiToken, "API Token", Modifier.weight(1f)) { value ->
+                        apiToken = value
+                        onUpdateSettings { it.copy(localApiToken = value.trim().takeIf(String::isNotEmpty)) }
+                    }
+                    SettingsAction("生成") {
+                        apiToken = UUID.randomUUID().toString()
+                        onUpdateSettings { it.copy(localApiToken = apiToken) }
+                    }
+                }
+                NumberSetting("API 端口", settings.localApiPort, 1024, 65_535) { value -> onUpdateSettings { it.copy(localApiPort = value) } }
+                SettingsSpacer()
+                SettingsLabel("WebDAV 备份")
+                SettingsTextField(webdavUrl, "https://dav.example.com/remote.php/dav/files/user/", fill = true) { value ->
+                    webdavUrl = value
+                    onUpdateSettings { it.copy(webdavUrl = value.trim().takeIf(String::isNotEmpty)) }
+                }
+                SettingsTextField(webdavUsername, "用户名", fill = true) { value ->
+                    webdavUsername = value
+                    onUpdateSettings { it.copy(webdavUsername = value.trim().takeIf(String::isNotEmpty)) }
+                }
+                SettingsTextField(webdavPassword, "密码（仅写入系统凭据库）", fill = true) { webdavPassword = it }
+                SettingsTextField(webdavRemoteFile, "远程文件名", fill = true) { value ->
+                    webdavRemoteFile = value
+                    onUpdateSettings { it.copy(webdavRemoteFile = value.trim().takeIf(String::isNotEmpty) ?: "MusicUnlock-backup.zip") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SettingsAction("上传备份") {
+                        status = runCatching { WebDavSyncService().backup(settings, webdavPassword.ifBlank { null }).message }
+                            .getOrElse { "WebDAV 备份失败：${it.message}" }
+                    }
+                    SettingsAction("恢复备份") {
+                        status = runCatching { WebDavSyncService().restore(settings, webdavPassword.ifBlank { null }).message }
+                            .getOrElse { "WebDAV 恢复失败：${it.message}" }
                     }
                 }
                 SettingsSpacer()

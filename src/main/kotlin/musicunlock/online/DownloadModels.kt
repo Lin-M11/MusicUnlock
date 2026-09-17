@@ -68,6 +68,7 @@ data class DownloadTaskRecord(
     val preferences: DownloadPreferences = DownloadPreferences(),
     val playlistName: String? = null,
     val subscriptionId: String? = null,
+    val fallbackAttempted: Boolean = false,
     val state: DownloadTaskState = DownloadTaskState.QUEUED,
     val progress: Float = 0f,
     val downloadedBytes: Long = 0,

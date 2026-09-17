@@ -27,6 +27,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
@@ -81,6 +83,8 @@ internal fun LibraryPage(
     var search by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf(LibrarySort.TITLE) }
     var editingEntry by remember { mutableStateOf<LibraryEntry?>(null) }
+    var batchEditing by remember { mutableStateOf(false) }
+    var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
     var status by remember { mutableStateOf("扫描输出目录后可以检查重复、封面和歌词缺失") }
     var template by remember(settings.outputTemplate) { mutableStateOf(settings.outputTemplate) }
     var busy by remember { mutableStateOf(false) }
@@ -244,6 +248,28 @@ internal fun LibraryPage(
                         status = "已导出 ${LibraryExportService.exportCsv(filtered, target)} 条记录到 ${target.absolutePath}"
                     }
                 }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    OutlineAction("全选") { selectedPaths = filtered.mapTo(linkedSetOf()) { it.path } }
+                    OutlineAction("清空") { selectedPaths = emptySet() }
+                    OutlineAction("批量修复") {
+                        val selected = entries.filter { it.path in selectedPaths }
+                        scope.launch {
+                            busy = true
+                            val fixed = withContext(Dispatchers.IO) { selected.count { maintenance.repairTags(it) } }
+                            entries = library.all().filter { it.path.startsWith(settings.outputDir) }
+                            status = "已修复 $fixed 个文件"
+                            busy = false
+                        }
+                    }
+                    OutlineAction("批量编辑") {
+                        val first = entries.firstOrNull { it.path in selectedPaths }
+                        if (first != null) {
+                            batchEditing = true
+                            editingEntry = first
+                        }
+                    }
+                    Text("已选 ${selectedPaths.size}", fontSize = 11.sp, color = t.textMuted)
+                }
                 Spacer(Modifier.height(8.dp))
                 Box(Modifier.fillMaxWidth().height(210.dp)) {
                     if (filtered.isEmpty()) {
@@ -252,6 +278,13 @@ internal fun LibraryPage(
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
                             items(filtered, key = { it.path }) { entry ->
                                 Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Checkbox(
+                                        checked = entry.path in selectedPaths,
+                                        onCheckedChange = { checked ->
+                                            selectedPaths = if (checked) selectedPaths + entry.path else selectedPaths - entry.path
+                                        },
+                                        colors = CheckboxDefaults.colors(checkedColor = t.primary),
+                                    )
                                     Column(Modifier.weight(1f)) {
                                         Text(entry.title ?: File(entry.path).nameWithoutExtension, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(
@@ -375,10 +408,11 @@ internal fun LibraryPage(
             onSave = { title, artist, album, year, genre, composer, isrc, lyrics, cover ->
                 scope.launch {
                     busy = true
-                    status = if (withContext(Dispatchers.IO) {
-                            maintenance.updateTags(entry, title, artist, album, year, genre, composer, isrc, lyrics, cover)
-                        }
-                    ) {
+                    val targets = if (batchEditing) entries.filter { it.path in selectedPaths } else listOf(entry)
+                    val updated = withContext(Dispatchers.IO) {
+                        maintenance.updateTagsBatch(targets, title, artist, album, year, genre, composer, isrc, lyrics, cover)
+                    }
+                    status = if (batchEditing) "已更新 $updated / ${targets.size} 个文件" else if (updated > 0) {
                         "标签已保存：${File(entry.path).name}"
                     } else {
                         "标签保存失败"
@@ -387,7 +421,7 @@ internal fun LibraryPage(
                     busy = false
                 }
             },
-            onClose = { editingEntry = null },
+            onClose = { editingEntry = null; batchEditing = false },
         )
     }
     }

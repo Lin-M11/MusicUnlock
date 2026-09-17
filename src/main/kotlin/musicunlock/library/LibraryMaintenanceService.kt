@@ -159,6 +159,21 @@ class LibraryMaintenanceService(
         return ok
     }
 
+    fun updateTagsBatch(
+        entries: List<LibraryEntry>,
+        title: String?,
+        artist: String?,
+        album: String?,
+        year: Int?,
+        genre: String?,
+        composer: String?,
+        isrc: String?,
+        lyrics: String? = null,
+        cover: ByteArray? = null,
+    ): Int = entries.count { entry ->
+        updateTags(entry, title, artist, album, year, genre, composer, isrc, lyrics, cover)
+    }
+
     fun removeDuplicates(groups: List<List<LibraryEntry>>): Int {
         var removed = 0
         DuplicateCleanupPlanner.plan(groups).decisions

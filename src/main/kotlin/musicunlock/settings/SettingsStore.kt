@@ -151,6 +151,23 @@ class SettingsRepository internal constructor(
                     )
                 },
             watchFolders = source.watchFolders.map(String::trim).filter(String::isNotEmpty).distinct(),
+            automationRules = source.automationRules
+                .filter { it.id.isNotBlank() && it.inputDir.isNotBlank() && it.outputDir.isNotBlank() }
+                .map {
+                    it.copy(
+                        name = it.name.trim().takeIf(String::isNotEmpty) ?: "自动转换",
+                        outputTemplate = it.outputTemplate.trim().takeIf(String::isNotEmpty) ?: "{title}",
+                        minBytes = it.minBytes.coerceAtLeast(0L),
+                        extensions = it.extensions.map { ext -> ext.trim().lowercase().removePrefix(".") }
+                            .filter(String::isNotEmpty)
+                            .distinct(),
+                    )
+                },
+            localApiPort = source.localApiPort.coerceIn(1024, 65_535),
+            localApiToken = source.localApiToken?.trim()?.takeIf(String::isNotEmpty),
+            webdavUrl = source.webdavUrl?.trim()?.takeIf(String::isNotEmpty),
+            webdavUsername = source.webdavUsername?.trim()?.takeIf(String::isNotEmpty),
+            webdavRemoteFile = source.webdavRemoteFile.trim().takeIf(String::isNotEmpty) ?: "MusicUnlock-backup.zip",
         )
     }
 

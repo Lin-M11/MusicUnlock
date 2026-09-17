@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import musicunlock.library.LibraryIndex
+import musicunlock.library.ManagedLibraryTrashService
 import musicunlock.settings.DownloadExistingPolicy
 import musicunlock.settings.OutputFormat
 import java.io.File
@@ -53,6 +54,7 @@ data class ConversionTaskRecord(
     val existingFilePolicy: DownloadExistingPolicy = DownloadExistingPolicy.SKIP,
     val forceOverwrite: Boolean = false,
     val deduplicate: Boolean = false,
+    val trashSourceOnSuccess: Boolean = false,
     val state: ConversionTaskState = ConversionTaskState.QUEUED,
     val stage: ConversionStage? = null,
     val progress: Float = 0f,
@@ -165,6 +167,7 @@ class ConversionTaskManager(
         existingFilePolicy: DownloadExistingPolicy = DownloadExistingPolicy.SKIP,
         forceOverwrite: Boolean = false,
         deduplicate: Boolean = false,
+        trashSourceOnSuccess: Boolean = false,
     ): String {
         val id = UUID.randomUUID().toString()
         addTask(
@@ -178,6 +181,7 @@ class ConversionTaskManager(
                 existingFilePolicy = existingFilePolicy,
                 forceOverwrite = forceOverwrite,
                 deduplicate = deduplicate,
+                trashSourceOnSuccess = trashSourceOnSuccess,
             ),
         )
         pump()
@@ -193,8 +197,9 @@ class ConversionTaskManager(
         existingFilePolicy: DownloadExistingPolicy = DownloadExistingPolicy.SKIP,
         forceOverwrite: Boolean = false,
         deduplicate: Boolean = false,
+        trashSourceOnSuccess: Boolean = false,
     ): List<String> = inputPaths.map { path ->
-        enqueue(path, outputDir, outputFormat, bitrateKbps, outputTemplate, existingFilePolicy, forceOverwrite, deduplicate)
+        enqueue(path, outputDir, outputFormat, bitrateKbps, outputTemplate, existingFilePolicy, forceOverwrite, deduplicate, trashSourceOnSuccess)
     }
 
     fun pause(id: String) {
@@ -426,6 +431,9 @@ class ConversionTaskManager(
             }
             if (state == ConversionTaskState.COMPLETED || state == ConversionTaskState.SKIPPED) {
                 outcome.outputPath?.let { path -> runCatching { library?.upsert(File(path), hash = false) } }
+                if (state == ConversionTaskState.COMPLETED && find(id)?.trashSourceOnSuccess == true) {
+                    runCatching { ManagedLibraryTrashService().move(File(initial.inputPath), "converted-${id}") }
+                }
             }
         } catch (_: ConversionCancelledException) {
             if (!isCurrentExecution(id, token)) return

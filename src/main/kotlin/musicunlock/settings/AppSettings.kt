@@ -72,6 +72,21 @@ data class PlaylistSubscription(
     val metadata: Map<String, String> = emptyMap(),
 )
 
+data class AutomationRule(
+    val id: String,
+    val name: String,
+    val enabled: Boolean = true,
+    val inputDir: String,
+    val outputDir: String,
+    val outputFormat: OutputFormat = OutputFormat.ORIGINAL,
+    val bitrateKbps: Int = 320,
+    val outputTemplate: String = "{title}",
+    val existingFilePolicy: DownloadExistingPolicy = DownloadExistingPolicy.SKIP,
+    val minBytes: Long = 0L,
+    val extensions: List<String> = emptyList(),
+    val trashSourceOnSuccess: Boolean = false,
+)
+
 /** 接收一次纯设置变更，由调用方在最新配置上应用。 */
 typealias SettingsUpdate = ((AppSettings) -> AppSettings) -> Unit
 
@@ -124,6 +139,13 @@ data class AppSettings(
     val launchAtLogin: Boolean = false,
     val subscriptionNotifications: Boolean = true,
     val autoDownloadUpdates: Boolean = false,
+    val automationRules: List<AutomationRule> = emptyList(),
+    val localApiEnabled: Boolean = false,
+    val localApiPort: Int = 17_893,
+    val localApiToken: String? = null,
+    val webdavUrl: String? = null,
+    val webdavUsername: String? = null,
+    val webdavRemoteFile: String = "MusicUnlock-backup.zip",
 )
 
 /** 默认输出目录：优先使用用户主目录下的 Music/MusicUnlock。 */

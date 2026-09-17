@@ -6,6 +6,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import musicunlock.core.Formats
+import musicunlock.automation.AutomationRuleEngine
 import musicunlock.service.MusicConverter
 import musicunlock.service.ConversionTaskManager
 import musicunlock.settings.AppSettings
@@ -77,24 +78,27 @@ class FolderWatcherService(
             val file = File(path)
             pending.remove(path)
             if (!file.isFile) return@forEach
+            val rule = AutomationRuleEngine.select(settings, file)
+            val effective = AutomationRuleEngine.effectiveSettings(settings, rule)
             if (conversionManager != null) {
                 conversionManager.enqueue(
                     inputPath = file.absolutePath,
-                    outputDir = settings.outputDir,
-                    outputFormat = settings.outputFormat,
-                    bitrateKbps = settings.bitrateKbps,
-                    outputTemplate = settings.localOutputTemplate,
-                    existingFilePolicy = settings.localExistingFilePolicy,
-                    forceOverwrite = !settings.skipExisting,
+                    outputDir = effective.outputDir,
+                    outputFormat = effective.outputFormat,
+                    bitrateKbps = effective.bitrateKbps,
+                    outputTemplate = effective.localOutputTemplate,
+                    existingFilePolicy = effective.localExistingFilePolicy,
+                    forceOverwrite = !effective.skipExisting,
+                    trashSourceOnSuccess = rule?.trashSourceOnSuccess == true,
                 )
-                onResult(WatchEventResult(path, true, "已加入本地转换任务"))
+                onResult(WatchEventResult(path, true, "已按规则「${rule?.name ?: "默认"}」加入本地转换任务"))
             } else {
                 val error = MusicConverter.convertWithError(
                     inputPath = file.absolutePath,
-                    outputDir = settings.outputDir,
-                    outputFormat = settings.outputFormat,
-                    bitrateKbps = settings.bitrateKbps,
-                    forceOverwrite = !settings.skipExisting,
+                    outputDir = effective.outputDir,
+                    outputFormat = effective.outputFormat,
+                    bitrateKbps = effective.bitrateKbps,
+                    forceOverwrite = !effective.skipExisting,
                 )
                 onResult(WatchEventResult(path, error == null, error))
             }

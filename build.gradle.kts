@@ -81,7 +81,7 @@ compose.desktop {
 
         nativeDistributions {
             // 运行时需要 java.net.http（网易云/QQ 音乐接口与浏览器登录的 CDP 通信）
-            modules("java.net.http")
+            modules("java.net.http", "jdk.httpserver")
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "MusicUnlock"
             packageVersion = "2.1.0"
@@ -90,13 +90,16 @@ compose.desktop {
             licenseFile.set(project.file("LICENSE"))
 
             windows {
+                iconFile.set(project.file("packaging/icons/musicunlock-app.ico"))
                 menuGroup = "MusicUnlock"
                 upgradeUuid = "3b62df34-8c17-4b20-9a05-2c1c8b41f3a6"
             }
             macOS {
+                iconFile.set(project.file("packaging/icons/musicunlock-app.icns"))
                 bundleID = "com.musicunlock.app"
             }
             linux {
+                iconFile.set(project.file("packaging/icons/musicunlock-app.png"))
                 appCategory = "AudioVideo"
             }
         }

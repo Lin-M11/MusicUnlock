@@ -3,16 +3,21 @@ package musicunlock.cli
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
 import musicunlock.core.Formats
+import musicunlock.automation.DesktopAutomationService
 import musicunlock.library.LibraryExportService
 import musicunlock.library.LibraryIndex
+import musicunlock.library.AudioQualityInspector
 import musicunlock.online.DownloadTaskManager
 import musicunlock.online.DownloadTaskState
 import musicunlock.online.toTranscodeFormat
+import musicunlock.online.ProviderHealthService
 import musicunlock.service.ConversionTaskManager
 import musicunlock.service.MusicConverter
 import musicunlock.settings.DownloadExistingPolicy
 import musicunlock.settings.OutputFormat
 import musicunlock.settings.QualityStrategy
+import musicunlock.settings.SettingsStore
+import musicunlock.sync.WebDavSyncService
 import java.io.File
 
 /**
@@ -55,6 +60,12 @@ object MainCli {
         var resumeTasks = false
         var libraryScan = false
         var libraryExport: String? = null
+        var daemon = false
+        var inspectPath: String? = null
+        var webdavBackup = false
+        var webdavRestore = false
+        var webdavPassword: String? = null
+        var providerHealth = false
 
         var i = 0
         while (i < args.size) {
@@ -125,6 +136,18 @@ object MainCli {
                         return 1
                     }
                 }
+                "--daemon", "--serve" -> daemon = true
+                "--inspect" -> {
+                    if (i + 1 >= args.size) { println("缺少体检文件或目录"); return 1 }
+                    inspectPath = args[++i]
+                }
+                "--webdav-backup" -> webdavBackup = true
+                "--webdav-restore" -> webdavRestore = true
+                "--webdav-password" -> {
+                    if (i + 1 >= args.size) { println("缺少 WebDAV 密码"); return 1 }
+                    webdavPassword = args[++i]
+                }
+                "--provider-health" -> providerHealth = true
                 "--json" -> onlineJson = true
                 "--download" -> downloadSearchResults = true
                 "--favorites" -> favorites = true
@@ -164,6 +187,32 @@ object MainCli {
                 else -> inputs.add(args[i])
             }
             i++
+        }
+
+        if (daemon) {
+            DesktopAutomationService.runForeground()
+            return 0
+        }
+
+        if (providerHealth) {
+            ProviderHealthService.check(SettingsStore.load()).forEach { health ->
+                println("${health.platform.displayName}\t登录=${health.loggedIn}\t状态=${if (health.healthy) "正常" else "异常"}\t延迟=${health.latencyMillis}ms\t能力=${health.capabilities}")
+                health.message?.let { println("  $it") }
+            }
+            return 0
+        }
+
+        if (webdavBackup || webdavRestore) {
+            val settings = SettingsStore.load()
+            val service = WebDavSyncService()
+            val password = webdavPassword ?: System.getenv("MUSICUNLOCK_WEBDAV_PASSWORD")
+            val result = runCatching {
+                if (webdavBackup) service.backup(settings, password) else service.restore(settings, password)
+            }
+            return result.fold(
+                { println("${it.message}：${it.remoteUrl}"); 0 },
+                { println("WebDAV 操作失败：${it.message}"); 1 },
+            )
         }
 
         if (listTasks) {
@@ -208,6 +257,22 @@ object MainCli {
                 println("扫描完成：索引 ${report.indexed} 个，清理 ${report.removed} 条，损坏 ${report.invalid.size} 个")
                 if (report.invalid.isEmpty()) 0 else 1
             }
+        }
+
+        inspectPath?.let { path ->
+            val files = mutableListOf<File>()
+            MusicConverter.listAllFiles(files, File(path))
+            if (files.isEmpty()) {
+                val direct = File(path)
+                if (direct.isFile) files += direct
+            }
+            val reports = files.map { AudioQualityInspector.inspect(it) }
+            reports.forEach { report ->
+                println("${report.score}  ${report.path}")
+                println("  格式=${report.format ?: "未知"} 码率=${report.bitRateKbps ?: report.effectiveBitRateKbps ?: 0}k 采样率=${report.sampleRateHz ?: 0}Hz 声道=${report.channels ?: 0}")
+                if (report.issues.isNotEmpty()) println("  问题：${report.issues.joinToString("；")}")
+            }
+            return if (reports.any { it.score < 60 }) 1 else 0
         }
 
         if (onlineUrl != null || onlinePlaylist != null || onlineSearch != null || favorites) {
@@ -353,6 +418,10 @@ object MainCli {
         println("--resume                         : resume persisted conversion and download tasks")
         println("--library-scan                   : scan output directory into the local library index")
         println("--library-export [csv|m3u8]      : export the current library index")
+        println("--daemon,--serve                 : run background watcher, playlist sync and local API")
+        println("--inspect [path]                 : inspect audio quality, corruption and clipping")
+        println("--webdav-backup|--webdav-restore : upload or restore the full backup over WebDAV")
+        println("--provider-health                : check provider sessions, capabilities and latency")
         println("-u,--url [link]                  : download a song/playlist/album/artist share link")
         println("--playlist [id]                  : download one playlist id")
         println("--search [keyword]               : search without downloading")
