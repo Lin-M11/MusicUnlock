@@ -4,6 +4,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,16 +22,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.LibraryMusic
-import androidx.compose.material.icons.outlined.Logout
+import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -45,7 +50,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.text.font.FontFamily
@@ -64,6 +72,8 @@ import musicunlock.online.MusicPlaylist
 import musicunlock.online.MusicSong
 import musicunlock.online.OnlineDownloadOutcome
 import musicunlock.online.DownloadTaskManager
+import musicunlock.online.DownloadPreflight
+import musicunlock.online.DownloadPreflightReport
 import musicunlock.online.OnlineMusicProvider
 import musicunlock.online.SubmitOutcome
 import musicunlock.online.toOnlineDownloadPreferences
@@ -74,7 +84,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import javax.imageio.ImageIO
 
-private enum class OnlineBatchAction { NONE, DOWNLOAD, SUBMIT }
+private enum class OnlineBatchAction { NONE, PREFLIGHT, DOWNLOAD, SUBMIT }
 
 /**
  * 所有在线音乐平台共用的下载页：账号恢复、歌单选择、批量下载、提交、进度和日志。
@@ -106,6 +116,7 @@ internal fun OnlineDownloadPage(
     var progress by remember(provider) { mutableStateOf(0f) }
     var doneCount by remember(provider) { mutableStateOf(0) }
     var failCount by remember(provider) { mutableStateOf(0) }
+    var preflightReport by remember(provider) { mutableStateOf<DownloadPreflightReport?>(null) }
     val logLines = remember(provider) { mutableStateListOf<String>() }
 
     LaunchedEffect(provider) {
@@ -224,6 +235,29 @@ internal fun OnlineDownloadPage(
                         subscribedCount = selected.count { id ->
                             settings.subscriptions.any { it.id == "${provider.platform.id}:$id" }
                         },
+                        preflightReport = preflightReport,
+                        onPreflight = {
+                            if (selected.isNotEmpty() && busyAction == OnlineBatchAction.NONE) {
+                                scope.launch {
+                                    busyAction = OnlineBatchAction.PREFLIGHT
+                                    val songs = withContext(Dispatchers.IO) {
+                                        selected.flatMap { id ->
+                                            playlists.firstOrNull { it.id == id }?.let { playlist ->
+                                                runCatching { provider.songs(playlist) }.getOrDefault(emptyList())
+                                            }.orEmpty()
+                                        }
+                                    }
+                                    preflightReport = withContext(Dispatchers.IO) {
+                                        DownloadPreflight.inspect(provider, songs, File(outputDir), settings.qualityStrategy)
+                                    }
+                                    logLines.add(
+                                        0,
+                                        "预检完成：可用 ${preflightReport?.availableCount ?: 0} 首 · 受限 ${preflightReport?.unavailableCount ?: 0} 首 · 预计 ${preflightReport?.totalEstimatedBytes ?: 0} 字节",
+                                    )
+                                    busyAction = OnlineBatchAction.NONE
+                                }
+                            }
+                        },
                         onSubscribe = {
                             val additions = selected.mapNotNull { id ->
                                 playlists.firstOrNull { it.id == id }?.let { playlist ->
@@ -311,9 +345,9 @@ private fun OnlineAccountBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(UiMetrics.CardRadius))
             .background(t.surface)
-            .border(1.dp, t.cardBorder, RoundedCornerShape(14.dp))
+            .border(1.dp, t.cardBorder, RoundedCornerShape(UiMetrics.CardRadius))
             .padding(horizontal = 18.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -338,7 +372,7 @@ private fun OnlineAccountBar(
             ),
             modifier = Modifier.height(36.dp),
         ) {
-            Icon(Icons.Outlined.Logout, contentDescription = null, modifier = Modifier.size(15.dp))
+            Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null, modifier = Modifier.size(15.dp))
             Spacer(Modifier.width(6.dp))
             Text("退出登录", fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
         }
@@ -359,11 +393,12 @@ private fun OnlinePlaylistCard(
     modifier: Modifier = Modifier,
 ) {
     val t = cleanTokens()
+    val listState = rememberLazyListState()
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(UiMetrics.CardRadius))
             .background(t.surface)
-            .border(1.dp, t.cardBorder, RoundedCornerShape(14.dp)),
+            .border(1.dp, t.cardBorder, RoundedCornerShape(UiMetrics.CardRadius)),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 13.dp),
@@ -377,23 +412,14 @@ private fun OnlinePlaylistCard(
                 Text("${playlists.size} 个", fontSize = 12.sp, color = t.textMuted)
             }
             Spacer(Modifier.weight(1f))
-            Text(
-                "全选",
-                modifier = Modifier.clickable(enabled = playlists.isNotEmpty(), onClick = onSelectAll).padding(6.dp),
-                fontSize = 12.5.sp,
-                color = if (playlists.isEmpty()) t.textMuted else t.primary,
-            )
-            Text(
-                "清空",
-                modifier = Modifier.clickable(enabled = selected.isNotEmpty(), onClick = onClear).padding(6.dp),
-                fontSize = 12.5.sp,
-                color = if (selected.isEmpty()) t.textMuted else t.textSecondary,
-            )
-            Icon(
-                Icons.Outlined.Refresh,
-                contentDescription = "刷新",
-                tint = t.textSecondary,
-                modifier = Modifier.size(18.dp).clickable(enabled = !loading, onClick = onRefresh),
+            AppTextAction("全选", onSelectAll, enabled = playlists.isNotEmpty(), primary = true)
+            AppTextAction("清空", onClear, enabled = selected.isNotEmpty())
+            AppIconButton(
+                icon = Icons.Outlined.Refresh,
+                contentDescription = "刷新歌单",
+                onClick = onRefresh,
+                enabled = !loading,
+                size = UiMetrics.CompactIconButtonSize,
             )
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(t.rowDivider))
@@ -407,18 +433,24 @@ private fun OnlinePlaylistCard(
             playlists.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("没有可下载的歌单\n点击右上角「刷新」重试", fontSize = 13.sp, color = t.textSecondary, textAlign = TextAlign.Center)
             }
-            else -> LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                itemsIndexed(playlists) { index, playlist ->
-                    OnlinePlaylistRow(
-                        provider = provider,
-                        playlist = playlist,
-                        checked = selected.contains(playlist.id),
-                        onToggle = { onToggle(playlist.id) },
-                    )
-                    if (index < playlists.lastIndex) {
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(t.rowDivider))
+            else -> Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    itemsIndexed(playlists) { index, playlist ->
+                        OnlinePlaylistRow(
+                            provider = provider,
+                            playlist = playlist,
+                            checked = selected.contains(playlist.id),
+                            onToggle = { onToggle(playlist.id) },
+                        )
+                        if (index < playlists.lastIndex) {
+                            Box(Modifier.fillMaxWidth().height(UiMetrics.Hairline).background(t.rowDivider))
+                        }
                     }
                 }
+                AppVerticalScrollbar(
+                    state = listState,
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 3.dp),
+                )
             }
         }
     }
@@ -432,8 +464,17 @@ private fun OnlinePlaylistRow(
     onToggle: () -> Unit,
 ) {
     val t = cleanTokens()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(horizontal = 12.dp, vertical = 8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (hovered || focused) t.surfaceSoft.copy(alpha = 0.72f) else Color.Transparent)
+            .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .clickable(interactionSource = interaction, indication = null, onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(
@@ -479,6 +520,8 @@ private fun OnlineDownloadRail(
     totalSongs: Int,
     canSubmit: Boolean,
     subscribedCount: Int,
+    preflightReport: DownloadPreflightReport?,
+    onPreflight: () -> Unit,
     onSubscribe: () -> Unit,
     onDownload: () -> Unit,
     onSubmit: () -> Unit,
@@ -491,6 +534,37 @@ private fun OnlineDownloadRail(
             path = outputDir,
             onBrowse = { FileDialogs.pickFolder("选择下载目录")?.let { onOutputDirChange(it.absolutePath) } },
         )
+
+        Button(
+            onClick = onPreflight,
+            enabled = busyAction == OnlineBatchAction.NONE && totalSelected > 0,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = t.surface,
+                contentColor = t.text,
+                disabledContainerColor = t.surfaceSoft,
+                disabledContentColor = t.textMuted,
+            ),
+            modifier = Modifier.fillMaxWidth().height(40.dp).border(1.dp, t.border, RoundedCornerShape(12.dp)),
+        ) {
+            Text(if (busyAction == OnlineBatchAction.PREFLIGHT) "正在预检…" else "预检选中歌单", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
+        preflightReport?.let { report ->
+            Column(
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(t.surfaceSoft).padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text("可用 ${report.availableCount} · 受限 ${report.unavailableCount}", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = t.text)
+                Text(
+                    "预计 ${humanBytes(report.totalEstimatedBytes)}${if (report.unknownSizeCount > 0) "，${report.unknownSizeCount} 首大小未知" else ""}",
+                    fontSize = 11.sp,
+                    color = t.textMuted,
+                )
+                report.outputFreeBytes?.let { free ->
+                    Text("输出盘剩余 ${humanBytes(free)}", fontSize = 11.sp, color = if (report.enoughSpace == false) t.error else t.textMuted)
+                }
+            }
+        }
 
         Button(
             onClick = onDownload,
@@ -553,7 +627,7 @@ private fun OnlineDownloadRail(
                         RoundedCornerShape(12.dp),
                     ),
             ) {
-                Icon(Icons.Outlined.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("生成下载任务并提交", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
@@ -562,6 +636,7 @@ private fun OnlineDownloadRail(
         OnlineRailLabel(
             when (busyAction) {
                 OnlineBatchAction.NONE -> "进度"
+                OnlineBatchAction.PREFLIGHT -> "正在预检…"
                 OnlineBatchAction.DOWNLOAD -> "正在加入下载队列…"
                 OnlineBatchAction.SUBMIT -> "正在提交任务…"
             },
@@ -593,17 +668,29 @@ private fun OnlineDownloadRail(
             if (logLines.isEmpty()) {
                 Text("暂无记录", fontSize = 12.sp, color = t.textMuted)
             } else {
-                Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                    logLines.forEach { line ->
-                        Text(
-                            line,
-                            fontSize = 11.5.sp,
-                            lineHeight = 17.sp,
-                            color = if (line.startsWith("失败")) t.error else t.textSecondary,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.padding(vertical = 2.dp),
-                        )
+                val scrollState = rememberScrollState()
+                Box(Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(end = 8.dp)
+                            .verticalScroll(scrollState),
+                    ) {
+                        logLines.forEach { line ->
+                            Text(
+                                line,
+                                fontSize = 11.5.sp,
+                                lineHeight = 17.sp,
+                                color = if (line.startsWith("失败")) t.error else t.textSecondary,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(vertical = 2.dp),
+                            )
+                        }
                     }
+                    AppVerticalScrollbar(
+                        state = scrollState,
+                        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
+                    )
                 }
             }
         }
@@ -618,13 +705,17 @@ private fun OnlineRailLabel(text: String) {
 @Composable
 private fun OnlineOutputDirField(path: String, onBrowse: () -> Unit) {
     val t = cleanTokens()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(t.surfaceSoft)
-            .border(1.dp, t.border, RoundedCornerShape(12.dp))
-            .clickable(onClick = onBrowse)
+            .background(if (hovered) t.surface else t.surfaceSoft)
+            .border(1.dp, if (hovered) t.dropBorder else t.border, RoundedCornerShape(12.dp))
+            .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .clickable(interactionSource = interaction, indication = null, onClick = onBrowse)
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -741,6 +832,7 @@ private fun runOnlineBatch(
                                 result.ok
                             }
                             OnlineBatchAction.NONE -> false
+                            OnlineBatchAction.PREFLIGHT -> false
                         }
                     }
                     if (outcome) done++ else fail++
@@ -789,4 +881,11 @@ private suspend fun reloadPlaylists(
     }.onFailure {
         update(emptyList(), false, "加载歌单失败：${it.message ?: "未知错误"}")
     }
+}
+
+private fun humanBytes(bytes: Long): String = when {
+    bytes >= 1L shl 30 -> String.format(java.util.Locale.ROOT, "%.1f GB", bytes / (1L shl 30).toDouble())
+    bytes >= 1L shl 20 -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1L shl 20).toDouble())
+    bytes >= 1L shl 10 -> String.format(java.util.Locale.ROOT, "%.0f KB", bytes / (1L shl 10).toDouble())
+    else -> "$bytes B"
 }

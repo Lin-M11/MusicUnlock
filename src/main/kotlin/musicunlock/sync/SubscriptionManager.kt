@@ -12,6 +12,8 @@ import musicunlock.online.toOnlineDownloadPreferences
 import musicunlock.settings.AppSettings
 import musicunlock.settings.PlaylistSubscription
 import java.io.File
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 class SubscriptionSyncResult(
     val subscriptionId: String,
@@ -29,6 +31,9 @@ class SubscriptionManager(
     private val taskManager: DownloadTaskManager,
     private val library: LibraryIndex = LibraryIndex(),
 ) {
+    private val syncLock = ReentrantLock()
+    private val listeners = mutableListOf<(SubscriptionSyncResult) -> Unit>()
+
     fun due(now: Long = System.currentTimeMillis()): List<PlaylistSubscription> {
         val settings = settingsProvider()
         return settings.subscriptions.filter { subscription ->
@@ -36,13 +41,13 @@ class SubscriptionManager(
         }
     }
 
-    fun sync(subscriptionId: String): SubscriptionSyncResult {
+    fun sync(subscriptionId: String): SubscriptionSyncResult = syncLock.withLock {
         val settings = settingsProvider()
         val subscription = settings.subscriptions.firstOrNull { it.id == subscriptionId }
-            ?: return SubscriptionSyncResult(subscriptionId, "", 0, 0, 0, "未找到追更配置")
+            ?: return@withLock publish(SubscriptionSyncResult(subscriptionId, "", 0, 0, 0, "未找到追更配置"))
         val provider = ProviderRegistry.find(subscription.platform)
-            ?: return SubscriptionSyncResult(subscriptionId, subscription.playlistName, 0, 0, 0, "未知平台")
-        return runCatching {
+            ?: return@withLock publish(SubscriptionSyncResult(subscriptionId, subscription.playlistName, 0, 0, 0, "未知平台"))
+        runCatching {
             val playlist = provider.playlist(subscription.playlistId)
                 ?: musicunlock.online.MusicPlaylist(
                     id = subscription.playlistId,
@@ -72,7 +77,9 @@ class SubscriptionManager(
                         if (it.id == subscription.id) {
                             it.copy(
                                 playlistName = playlist.name,
+                                lastAttemptAt = System.currentTimeMillis(),
                                 lastSyncAt = System.currentTimeMillis(),
+                                lastSyncError = null,
                                 lastTrackCount = songs.size,
                                 metadata = playlist.metadata.ifEmpty { it.metadata },
                             )
@@ -82,19 +89,39 @@ class SubscriptionManager(
             }
             SubscriptionSyncResult(subscription.id, playlist.name, songs.size, missing.size, songs.size - missing.size)
         }.getOrElse {
-            SubscriptionSyncResult(subscriptionId, subscription.playlistName, 0, 0, 0, it.message ?: it.toString())
-        }
+            val message = it.message ?: it.toString()
+            updateSettings { current ->
+                current.copy(
+                    subscriptions = current.subscriptions.map { item ->
+                        if (item.id == subscription.id) {
+                            item.copy(lastAttemptAt = System.currentTimeMillis(), lastSyncError = message)
+                        } else item
+                    },
+                )
+            }
+            SubscriptionSyncResult(subscriptionId, subscription.playlistName, 0, 0, 0, message)
+        }.let(::publish)
     }
 
     fun syncAllDue(): List<SubscriptionSyncResult> = due().map { sync(it.id) }
+
+    fun addListener(listener: (SubscriptionSyncResult) -> Unit): AutoCloseable {
+        synchronized(listeners) { listeners += listener }
+        return AutoCloseable { synchronized(listeners) { listeners.remove(listener) } }
+    }
 
     /** 应用运行期间启动调度器；每分钟检查一次到期任务。 */
     fun start(scope: CoroutineScope) {
         scope.launch(Dispatchers.IO) {
             while (isActive) {
-                syncAllDue()
+                runCatching { syncAllDue() }
                 delay(60_000L)
             }
         }
+    }
+
+    private fun publish(result: SubscriptionSyncResult): SubscriptionSyncResult {
+        synchronized(listeners) { listeners.toList().forEach { runCatching { it(result) } } }
+        return result
     }
 }

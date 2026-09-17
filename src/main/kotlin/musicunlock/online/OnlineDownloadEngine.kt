@@ -4,6 +4,7 @@ import musicunlock.library.LibraryIndex
 import musicunlock.service.AudioTranscoder
 import musicunlock.service.AudioTagData
 import musicunlock.service.TagWriter
+import musicunlock.service.TranscodeFormat
 import musicunlock.settings.AppSettings
 import musicunlock.settings.DownloadExistingPolicy
 import musicunlock.settings.LyricsMode
@@ -39,17 +40,19 @@ object OnlineDownloadEngine {
         outputDir.mkdirs()
         check(outputDir.isDirectory) { "无法创建输出目录：${outputDir.absolutePath}" }
         if (preferences.existingFilePolicy == DownloadExistingPolicy.SKIP && library.contains(song, provider.platform.id)) {
+            PartialDownloadStore.discard(outputDir, seed)
             onState(DownloadTaskState.SKIPPED, "本地曲库中已有该歌曲")
             return DownloadExecutionResult(File(outputDir, song.name), null, skipped = true, message = "曲库中已有该歌曲")
         }
 
         onState(DownloadTaskState.DOWNLOADING, "正在解析播放地址")
         val source = provider.playback(song, preferences.quality)
-        val part = File(outputDir, ".musicunlock-$seed.part")
+        val partial = PartialDownloadStore.prepare(outputDir, seed, source)
+        val part = partial.part
         provider.download(
             url = source.url,
             target = part.toPath(),
-            offset = part.length(),
+            offset = partial.offset,
             onProgress = onProgress,
             shouldContinue = shouldContinue,
         )
@@ -61,20 +64,27 @@ object OnlineDownloadEngine {
         val sourceExt = sourceAudioExtension(part)
         var audio = part
         var finalExt = sourceExt
+        val targetFormat = preferences.targetFormat ?: if (preferences.forceMp3) TranscodeFormat.MP3 else null
         onState(DownloadTaskState.TRANSCODING, "正在处理音频")
-        if (preferences.forceMp3 && !sourceExt.equals("mp3", ignoreCase = true)) {
-            val mp3 = File(outputDir, ".musicunlock-$seed.mp3")
-            val error = AudioTranscoder.toMp3(part, mp3, preferences.mp3BitrateKbps)
+        if (targetFormat != null && !sourceExt.equals(targetFormat.extension, ignoreCase = true)) {
+            val converted = File(outputDir, ".musicunlock-$seed.${targetFormat.extension}")
+            val error = AudioTranscoder.transcode(
+                input = part,
+                output = converted,
+                format = targetFormat,
+                bitrateKbps = preferences.mp3BitrateKbps,
+                shouldContinue = shouldContinue,
+            )
             if (error != null) {
-                mp3.delete()
+                converted.delete()
                 throw ClassifiedDownloadException(DownloadErrorKind.DECODE, error, true)
             }
-            audio = mp3
-            finalExt = "mp3"
+            audio = converted
+            finalExt = targetFormat.extension
         }
 
         val template = preferences.outputTemplate.ifBlank {
-            if (preferences.forceMp3) "{artist} - {title}" else "{artist}/{album}/{title}"
+            if (targetFormat != null) "{artist} - {title}" else "{artist}/{album}/{title}"
         }
         val rendered = OutputTemplate.render(
             template = template,
@@ -88,6 +98,7 @@ object OnlineDownloadEngine {
         val destination = resolveDestination(requested, source, preferences.existingFilePolicy)
         if (destination == null) {
             deleteTemp(part, audio)
+            PartialDownloadStore.complete(partial)
             onState(DownloadTaskState.SKIPPED, "曲库中已有该歌曲")
             return DownloadExecutionResult(requested, source.qualityLabel, skipped = true, message = "已存在，已跳过")
         }
@@ -131,9 +142,10 @@ object OnlineDownloadEngine {
             hash = false,
         )
         deleteTemp(part, audio, target)
-        val finalQuality = if (preferences.forceMp3 && !sourceExt.equals("mp3", ignoreCase = true)) {
+        PartialDownloadStore.complete(partial)
+        val finalQuality = if (targetFormat != null && !sourceExt.equals(targetFormat.extension, ignoreCase = true)) {
             val sourceLabel = source.qualityLabel ?: sourceExt.uppercase()
-            "MP3 ${preferences.mp3BitrateKbps}k（源 $sourceLabel）"
+            "${targetFormat.name} ${preferences.mp3BitrateKbps}k（源 $sourceLabel）"
         } else {
             source.qualityLabel ?: finalExt.uppercase()
         }

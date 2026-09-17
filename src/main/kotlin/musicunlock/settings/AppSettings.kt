@@ -6,9 +6,28 @@ import java.io.File
 enum class OutputFormat {
     ORIGINAL,
     MP3,
+    FLAC,
+    M4A,
+    OGG,
+    OPUS,
+    WAV,
 }
 
 val outputBitrates: List<Int> = listOf(128, 192, 320)
+
+val OutputFormat.usesBitrate: Boolean
+    get() = this in setOf(OutputFormat.MP3, OutputFormat.M4A, OutputFormat.OGG, OutputFormat.OPUS)
+
+val OutputFormat.extension: String?
+    get() = when (this) {
+        OutputFormat.ORIGINAL -> null
+        OutputFormat.MP3 -> "mp3"
+        OutputFormat.FLAC -> "flac"
+        OutputFormat.M4A -> "m4a"
+        OutputFormat.OGG -> "ogg"
+        OutputFormat.OPUS -> "opus"
+        OutputFormat.WAV -> "wav"
+    }
 
 /** 在线下载遇到同名文件时的处理方式。 */
 enum class DownloadExistingPolicy {
@@ -45,6 +64,8 @@ data class PlaylistSubscription(
     val enabled: Boolean = true,
     val syncIntervalMinutes: Int = 60,
     val lastSyncAt: Long = 0L,
+    val lastAttemptAt: Long = 0L,
+    val lastSyncError: String? = null,
     val lastTrackCount: Int = 0,
     val quality: QualityStrategy = QualityStrategy.HIGHEST,
     val outputTemplate: String = "{artist}/{album}/{title}",
@@ -68,6 +89,8 @@ data class AppSettings(
     val skipExisting: Boolean = true,
     val outputFormat: OutputFormat = OutputFormat.ORIGINAL,
     val bitrateKbps: Int = 320,
+    val localOutputTemplate: String = "{title}",
+    val localExistingFilePolicy: DownloadExistingPolicy = DownloadExistingPolicy.SKIP,
     val windowWidth: Int = 1120,
     val windowHeight: Int = 760,
     val neteaseCookie: String? = null,
@@ -98,6 +121,9 @@ data class AppSettings(
     val notifyOnComplete: Boolean = true,
     val preventSleepWhileDownloading: Boolean = true,
     val useSystemProxy: Boolean = true,
+    val launchAtLogin: Boolean = false,
+    val subscriptionNotifications: Boolean = true,
+    val autoDownloadUpdates: Boolean = false,
 )
 
 /** 默认输出目录：优先使用用户主目录下的 Music/MusicUnlock。 */

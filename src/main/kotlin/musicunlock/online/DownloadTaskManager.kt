@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import musicunlock.diagnostics.Diagnostics
 import musicunlock.library.LibraryIndex
 import musicunlock.settings.AppSettings
@@ -119,9 +120,9 @@ class DownloadTaskManager(
         val job = activeJobs.remove(id)
         if (job != null) {
             job.cancel()
-            scope.launch { job.join(); File(task.outputDir, ".musicunlock-$id.part").delete() }
+            scope.launch { job.join(); PartialDownloadStore.discard(File(task.outputDir), id) }
         } else {
-            File(task.outputDir, ".musicunlock-$id.part").delete()
+            PartialDownloadStore.discard(File(task.outputDir), id)
         }
         pump()
     }
@@ -130,6 +131,28 @@ class DownloadTaskManager(
         val task = find(id) ?: return
         if (!task.canRetry && task.state != DownloadTaskState.PAUSED) return
         update(id) { it.copy(state = DownloadTaskState.QUEUED, attempts = 0, message = "等待重试", errorKind = null, updatedAt = System.currentTimeMillis()) }
+        pump()
+    }
+
+    fun retryWithQuality(id: String, quality: musicunlock.settings.QualityStrategy) {
+        val task = find(id) ?: return
+        if (!task.canRetry && task.state != DownloadTaskState.PAUSED) return
+        PartialDownloadStore.discard(File(task.outputDir), id)
+        update(id) {
+            it.copy(
+                preferences = it.preferences.copy(quality = quality),
+                state = DownloadTaskState.QUEUED,
+                attempts = 0,
+                progress = 0f,
+                downloadedBytes = 0L,
+                totalBytes = null,
+                speedBytesPerSecond = 0L,
+                etaSeconds = null,
+                message = "已切换音频质量并重新排队",
+                errorKind = null,
+                updatedAt = System.currentTimeMillis(),
+            )
+        }
         pump()
     }
 
@@ -152,13 +175,31 @@ class DownloadTaskManager(
     fun remove(id: String) {
         val task = find(id) ?: return
         if (!task.isTerminal) cancel(id)
-        File(task.outputDir, ".musicunlock-$id.part").delete()
+        PartialDownloadStore.discard(File(task.outputDir), id)
         updateTasks { tasks -> tasks.filterNot { it.id == id } }
     }
 
     fun addListener(listener: (DownloadTaskSnapshot) -> Unit): AutoCloseable {
         synchronized(listeners) { listeners += listener }
         return AutoCloseable { synchronized(listeners) { listeners.remove(listener) } }
+    }
+
+    /** 从磁盘重新加载任务，用于完整备份恢复后立即生效。 */
+    fun reload() {
+        val jobs = activeJobs.values.toList()
+        jobs.forEach { it.cancel() }
+        runBlocking { jobs.forEach { it.join() } }
+        activeJobs.clear()
+        val loaded = loadTasks().map { task ->
+            if (!task.isTerminal && task.state != DownloadTaskState.PAUSED) {
+                task.copy(state = DownloadTaskState.QUEUED, message = "已恢复任务", updatedAt = System.currentTimeMillis())
+            } else {
+                task
+            }
+        }
+        synchronized(lock) { mutableTasks.value = loaded }
+        persist(force = true)
+        pump()
     }
 
     fun snapshot(task: DownloadTaskRecord): DownloadTaskSnapshot = DownloadTaskSnapshot(

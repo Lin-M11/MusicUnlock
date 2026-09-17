@@ -56,6 +56,19 @@ object HttpDownloader {
             throw classifyHttp(status, "下载失败（HTTP $status）")
         }
 
+        if (status == 206 && resumeFrom > 0) {
+            val contentRange = response.headers().firstValue("Content-Range").orElse(null)
+            val rangeStart = contentRange?.substringBefore('-')?.substringAfter(' ')?.toLongOrNull()
+            if (rangeStart != resumeFrom) {
+                Files.deleteIfExists(target)
+                throw ClassifiedDownloadException(
+                    DownloadErrorKind.NETWORK,
+                    "服务器返回的断点位置不一致，已丢弃旧分片并将重新下载",
+                    true,
+                )
+            }
+        }
+
         val append = status == 206 && resumeFrom > 0
         if (!append && resumeFrom > 0) {
             Files.deleteIfExists(target)
@@ -111,6 +124,13 @@ object HttpDownloader {
             }
         }
         val elapsed = max(1L, System.nanoTime() - startedAt)
+        if (total != null && downloaded < total) {
+            throw ClassifiedDownloadException(
+                DownloadErrorKind.NETWORK,
+                "下载连接提前结束：已接收 $downloaded / $total 字节",
+                true,
+            )
+        }
         val average = (downloaded - startAt) * 1_000_000_000L / elapsed
         onProgress(downloaded, total, average.coerceAtLeast(0L))
     }

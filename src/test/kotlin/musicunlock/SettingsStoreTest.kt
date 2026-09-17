@@ -147,10 +147,12 @@ class SettingsStoreTest {
             qqCookie = "secret-2",
             neteaseAccount = AccountSnapshot("用户", null, "1"),
             outputTemplate = "{artist}/{title}",
+            proxyUrl = "http://user:secret@127.0.0.1:7890",
         ).let { musicunlock.settings.SettingsPortability.run { it.withoutSecrets() } }
         assertNull(settings.neteaseCookie)
         assertNull(settings.qqCookie)
         assertNull(settings.neteaseAccount)
         assertEquals("{artist}/{title}", settings.outputTemplate)
+        assertEquals("http://127.0.0.1:7890", settings.proxyUrl)
     }
 }

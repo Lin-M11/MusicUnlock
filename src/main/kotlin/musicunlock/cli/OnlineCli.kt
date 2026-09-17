@@ -17,6 +17,7 @@ import musicunlock.playlist.MusicLinkResolver
 import musicunlock.settings.AppSettings
 import musicunlock.settings.QualityStrategy
 import musicunlock.settings.SettingsStore
+import musicunlock.service.TranscodeFormat
 import java.io.File
 import java.nio.file.Files
 
@@ -38,6 +39,7 @@ data class OnlineCliOptions(
     val timeoutSeconds: Long? = null,
     val cookie: String? = null,
     val forceMp3: Boolean = false,
+    val targetFormat: TranscodeFormat? = null,
 )
 
 /** 无界面的在线下载 / 搜索入口。 */
@@ -126,7 +128,13 @@ object OnlineCliRunner {
             taskFile = temp,
         )
         val preferences = settings.toOnlineDownloadPreferences().let {
-            if (options.forceMp3) it.copy(forceMp3 = true, mp3BitrateKbps = settings.bitrateKbps) else it
+            if (options.forceMp3) {
+                it.copy(forceMp3 = true, targetFormat = options.targetFormat ?: TranscodeFormat.MP3, mp3BitrateKbps = settings.bitrateKbps)
+            } else if (options.targetFormat != null) {
+                it.copy(targetFormat = options.targetFormat, mp3BitrateKbps = settings.bitrateKbps)
+            } else {
+                it
+            }
         }
         val ids = ManagerBatchQueue.enqueue(manager, songs, output, preferences)
         val finalSettings = settings

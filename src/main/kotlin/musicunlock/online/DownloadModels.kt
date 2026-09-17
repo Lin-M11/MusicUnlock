@@ -3,6 +3,8 @@ package musicunlock.online
 import musicunlock.settings.DownloadExistingPolicy
 import musicunlock.settings.LyricsMode
 import musicunlock.settings.QualityStrategy
+import musicunlock.settings.OutputFormat
+import musicunlock.service.TranscodeFormat
 import java.io.File
 
 /** 用户可选的下载音质策略。 */
@@ -20,6 +22,7 @@ data class DownloadPreferences(
     val requestTimeoutSeconds: Long = 30,
     val connectTimeoutSeconds: Long = 10,
     val proxyUrl: String? = null,
+    val targetFormat: TranscodeFormat? = null,
     val forceMp3: Boolean = false,
     val mp3BitrateKbps: Int = 320,
 )
@@ -137,12 +140,19 @@ data class PlaybackSource(
     val qualityLabel: String? = null,
     val bitrateKbps: Int? = null,
     val lossless: Boolean = false,
+    val contentLengthBytes: Long? = null,
 )
 
 fun musicunlock.settings.AppSettings.toOnlineDownloadPreferences(): DownloadPreferences =
-    toDownloadPreferences(forceMp3 = outputFormat == musicunlock.settings.OutputFormat.MP3)
+    toDownloadPreferences(
+        forceMp3 = outputFormat == OutputFormat.MP3,
+        targetFormat = outputFormat.toTranscodeFormat(),
+    )
 
-fun musicunlock.settings.AppSettings.toDownloadPreferences(forceMp3: Boolean = true): DownloadPreferences =
+fun musicunlock.settings.AppSettings.toDownloadPreferences(
+    forceMp3: Boolean = true,
+    targetFormat: TranscodeFormat? = if (forceMp3) TranscodeFormat.MP3 else null,
+): DownloadPreferences =
     DownloadPreferences(
         quality = qualityStrategy,
         existingFilePolicy = existingFilePolicy,
@@ -157,6 +167,17 @@ fun musicunlock.settings.AppSettings.toDownloadPreferences(forceMp3: Boolean = t
         requestTimeoutSeconds = downloadTimeoutSeconds,
         connectTimeoutSeconds = connectTimeoutSeconds,
         proxyUrl = proxyUrl,
+        targetFormat = targetFormat,
         forceMp3 = forceMp3,
         mp3BitrateKbps = bitrateKbps,
     )
+
+fun OutputFormat.toTranscodeFormat(): TranscodeFormat? = when (this) {
+    OutputFormat.ORIGINAL -> null
+    OutputFormat.MP3 -> TranscodeFormat.MP3
+    OutputFormat.FLAC -> TranscodeFormat.FLAC
+    OutputFormat.M4A -> TranscodeFormat.M4A
+    OutputFormat.OGG -> TranscodeFormat.OGG
+    OutputFormat.OPUS -> TranscodeFormat.OPUS
+    OutputFormat.WAV -> TranscodeFormat.WAV
+}

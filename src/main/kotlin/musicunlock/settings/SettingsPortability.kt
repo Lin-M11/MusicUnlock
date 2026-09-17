@@ -2,6 +2,7 @@ package musicunlock.settings
 
 import com.google.gson.GsonBuilder
 import java.io.File
+import java.net.URI
 
 /** 导出/导入不含 Cookie 的可分享配置。 */
 object SettingsPortability {
@@ -9,12 +10,19 @@ object SettingsPortability {
 
     fun export(target: File): Boolean = runCatching {
         target.parentFile?.mkdirs()
-        target.writeText(gson.toJson(SettingsStore.load().withoutSecrets()))
+        target.writeText(toJson())
         true
     }.getOrDefault(false)
 
     fun import(source: File): AppSettings = runCatching {
-        val imported = gson.fromJson(source.readText(), AppSettings::class.java)
+        importJson(source.readText())
+    }.getOrElse { throw IllegalArgumentException("配置导入失败：${it.message}") }
+
+    fun toJson(settings: AppSettings = SettingsStore.load()): String =
+        gson.toJson(settings.withoutSecrets())
+
+    fun importJson(json: String): AppSettings = runCatching {
+        val imported = gson.fromJson(json, AppSettings::class.java)
             ?: throw IllegalArgumentException("配置文件为空")
         SettingsStore.update { current ->
             imported.copy(
@@ -39,5 +47,20 @@ object SettingsPortability {
         qqAccount = null,
         kugouAccount = null,
         kuwoAccount = null,
+        proxyUrl = proxyUrl?.let(::withoutUserInfo),
     )
+
+    private fun withoutUserInfo(value: String): String = runCatching {
+        val uri = URI.create(value)
+        if (uri.userInfo == null) return@runCatching value
+        URI(
+            uri.scheme,
+            null,
+            uri.host,
+            uri.port,
+            uri.path,
+            uri.query,
+            uri.fragment,
+        ).toString()
+    }.getOrDefault(value)
 }

@@ -3,6 +3,8 @@ package musicunlock.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,9 +19,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
@@ -34,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,17 +48,19 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import musicunlock.diagnostics.Diagnostics
 import musicunlock.library.LibraryAuditReport
+import musicunlock.library.LibraryCleanupPlan
+import musicunlock.library.LibraryCleanupService
+import musicunlock.library.LibraryEntry
+import musicunlock.library.LibraryExportService
+import musicunlock.library.LibraryIndex
 import musicunlock.library.LibraryMaintenanceService
 import musicunlock.settings.AppSettings
-import musicunlock.settings.DownloadExistingPolicy
-import musicunlock.settings.LyricsMode
-import musicunlock.settings.QualityStrategy
-import musicunlock.settings.SettingsPortability
 import musicunlock.settings.SettingsUpdate
 import musicunlock.sync.SubscriptionManager
 import java.io.File
+
+private enum class LibrarySort { TITLE, ARTIST, ALBUM }
 
 @Composable
 internal fun LibraryPage(
@@ -60,15 +68,24 @@ internal fun LibraryPage(
     onUpdateSettings: SettingsUpdate,
     maintenance: LibraryMaintenanceService,
     subscriptionManager: SubscriptionManager,
+    library: LibraryIndex,
     modifier: Modifier = Modifier,
 ) {
     val t = cleanTokens()
     val scope = rememberCoroutineScope()
     var report by remember { mutableStateOf<LibraryAuditReport?>(null) }
+    var entries by remember { mutableStateOf<List<LibraryEntry>>(emptyList()) }
+    var cleanupPlan by remember { mutableStateOf<LibraryCleanupPlan?>(null) }
+    var allowLikelyDuplicates by remember { mutableStateOf(false) }
+    var cleanupId by remember { mutableStateOf<String?>(null) }
+    var search by remember { mutableStateOf("") }
+    var sort by remember { mutableStateOf(LibrarySort.TITLE) }
+    var editingEntry by remember { mutableStateOf<LibraryEntry?>(null) }
     var status by remember { mutableStateOf("扫描输出目录后可以检查重复、封面和歌词缺失") }
     var template by remember(settings.outputTemplate) { mutableStateOf(settings.outputTemplate) }
-    var proxy by remember(settings.proxyUrl) { mutableStateOf(settings.proxyUrl.orEmpty()) }
     var busy by remember { mutableStateOf(false) }
+    val subscriptionListState = rememberLazyListState()
+    val cleanupService = remember(library) { LibraryCleanupService(library) }
 
     fun scan() {
         if (busy) return
@@ -77,12 +94,14 @@ internal fun LibraryPage(
         scope.launch {
             val result = withContext(Dispatchers.IO) { maintenance.scan(File(settings.outputDir), hash = true) }
             report = withContext(Dispatchers.IO) { maintenance.audit(File(settings.outputDir)) }
+            entries = library.all().filter { it.path.startsWith(settings.outputDir) }
             status = "已索引 ${result.indexed} 个音频，清理 ${result.removed} 条失效记录，发现 ${report?.issues?.size ?: 0} 个问题，损坏 ${result.invalid.size} 个"
             busy = false
         }
     }
 
-    Row(modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    Box(modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier.weight(1f).fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -120,12 +139,61 @@ internal fun LibraryPage(
                                 busy = false
                             }
                         }
-                        OutlineAction("删除重复副本") {
+                        OutlineAction("预览重复清理") {
+                            cleanupPlan = cleanupService.plan(current.duplicateGroups)
+                            allowLikelyDuplicates = false
+                        }
+                    }
+                    cleanupPlan?.let { plan ->
+                        Spacer(Modifier.height(10.dp))
+                        Column(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(t.surfaceSoft).padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(7.dp),
+                        ) {
+                            Text(
+                                "精确重复 ${plan.exactTrackCount} 首 · 疑似重复 ${plan.likelyTrackCount} 首 · 可回收 ${humanBytes(plan.reclaimBytes)}",
+                                fontSize = 12.sp,
+                                color = t.textSecondary,
+                            )
+                            plan.decisions.take(5).forEach { decision ->
+                                Text(
+                                    "保留 ${File(decision.keepPath).name}；移除 ${decision.removePaths.joinToString("、") { File(it).name }}",
+                                    fontSize = 11.sp,
+                                    color = t.textMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (plan.requiresConfirmation) {
+                                ToggleLine("同时处理疑似重复", allowLikelyDuplicates) { allowLikelyDuplicates = it }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlineAction("移入回收站") {
+                                    scope.launch {
+                                        busy = true
+                                        val outcome = withContext(Dispatchers.IO) { cleanupService.apply(plan, allowLikelyDuplicates) }
+                                        cleanupId = outcome.id
+                                        report = withContext(Dispatchers.IO) { maintenance.audit(File(settings.outputDir)) }
+                                        entries = library.all().filter { it.path.startsWith(settings.outputDir) }
+                                        status = "已移动 ${outcome.movedTracks} 首到回收站，可撤销"
+                                        cleanupPlan = null
+                                        busy = false
+                                    }
+                                }
+                                OutlineAction("取消") { cleanupPlan = null }
+                            }
+                        }
+                    }
+                    cleanupId?.let { id ->
+                        Spacer(Modifier.height(8.dp))
+                        OutlineAction("撤销上次清理") {
                             scope.launch {
                                 busy = true
-                                val removed = withContext(Dispatchers.IO) { maintenance.removeDuplicates(current.duplicateGroups) }
+                                val undo = withContext(Dispatchers.IO) { cleanupService.undo(id) }
                                 report = withContext(Dispatchers.IO) { maintenance.audit(File(settings.outputDir)) }
-                                status = "已删除 $removed 个重复文件"
+                                entries = library.all().filter { it.path.startsWith(settings.outputDir) }
+                                status = if (undo.failed.isEmpty()) "已恢复 ${undo.restoreCount} 个文件" else "恢复失败 ${undo.failed.size} 个"
+                                if (undo.failed.isEmpty()) cleanupId = null
                                 busy = false
                             }
                         }
@@ -137,7 +205,7 @@ internal fun LibraryPage(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SmallTextField(template, "命名模板", Modifier.weight(1f)) { template = it }
                     OutlineAction("应用模板") {
-                        val entries = musicunlock.library.LibraryIndex().all()
+                        val entries = library.all()
                             .filter { entry -> entry.path.startsWith(settings.outputDir) }
                         scope.launch {
                             busy = true
@@ -152,13 +220,88 @@ internal fun LibraryPage(
                 Text("{artist}/{album}/{title} · {track:02} · {disc} · {year} · {genre} · {platform} · {quality} · {bitrate}", fontSize = 11.5.sp, color = t.textMuted)
             }
 
+            SectionCard("曲库浏览") {
+                val filtered = entries.filter { entry ->
+                    search.isBlank() || listOf(entry.title, entry.artist, entry.album, entry.path).any { it?.contains(search, ignoreCase = true) == true }
+                }.sortedWith(
+                    when (sort) {
+                        LibrarySort.TITLE -> compareBy { it.title.orEmpty().lowercase() }
+                        LibrarySort.ARTIST -> compareBy({ it.artist.orEmpty().lowercase() }, { it.title.orEmpty().lowercase() })
+                        LibrarySort.ALBUM -> compareBy({ it.album.orEmpty().lowercase() }, { it.title.orEmpty().lowercase() })
+                    },
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SmallTextField(search, "搜索歌曲、歌手、专辑或路径", Modifier.weight(1f)) { search = it }
+                    LibrarySort.entries.forEach { mode ->
+                        AppChoiceChip(text = mode.displayName(), selected = sort == mode, onClick = { sort = mode })
+                    }
+                    OutlineAction("导出 M3U8") {
+                        val target = FileDialogs.saveFile("导出 M3U8", "MusicUnlock-library.m3u8") ?: return@OutlineAction
+                        status = "已导出 ${LibraryExportService.exportM3u8(filtered, target)} 首到 ${target.absolutePath}"
+                    }
+                    OutlineAction("导出 CSV") {
+                        val target = FileDialogs.saveFile("导出 CSV", "MusicUnlock-library.csv") ?: return@OutlineAction
+                        status = "已导出 ${LibraryExportService.exportCsv(filtered, target)} 条记录到 ${target.absolutePath}"
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Box(Modifier.fillMaxWidth().height(210.dp)) {
+                    if (filtered.isEmpty()) {
+                        Text("扫描后这里会显示曲库文件；输入关键词可筛选", fontSize = 12.sp, color = t.textMuted, modifier = Modifier.align(Alignment.Center))
+                    } else {
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            items(filtered, key = { it.path }) { entry ->
+                                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(entry.title ?: File(entry.path).nameWithoutExtension, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(
+                                            listOfNotNull(
+                                                entry.artist,
+                                                entry.album,
+                                                entry.format,
+                                                entry.bitRateKbps?.let { "${it}k" },
+                                                humanBytes(entry.size),
+                                            ).joinToString(" · "),
+                                            fontSize = 10.5.sp,
+                                            color = t.textMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    OutlineAction("修复") {
+                                        scope.launch {
+                                            busy = true
+                                            status = if (withContext(Dispatchers.IO) { maintenance.repairTags(entry) }) "已修复 ${File(entry.path).name}" else "修复失败"
+                                            entries = library.all().filter { it.path.startsWith(settings.outputDir) }
+                                            busy = false
+                                        }
+                                    }
+                                    OutlineAction("编辑") { editingEntry = entry }
+                                    OutlineAction("打开目录") {
+                                        runCatching { java.awt.Desktop.getDesktop().open(File(entry.path).parentFile) }
+                                    }
+                                }
+                                Box(Modifier.fillMaxWidth().height(UiMetrics.Hairline).background(t.rowDivider))
+                            }
+                        }
+                    }
+                }
+            }
+
             SectionCard("歌单追更", modifier = Modifier.weight(1f)) {
                 if (settings.subscriptions.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("在任意平台勾选歌单后点击「追更选中歌单」", fontSize = 13.sp, color = t.textMuted)
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            AppEmptyIcon(Icons.Outlined.LibraryMusic)
+                            Spacer(Modifier.height(12.dp))
+                            Text("还没有追更的歌单", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = t.text)
+                            Spacer(Modifier.height(4.dp))
+                            Text("在任意平台勾选歌单后点击「追更选中歌单」", fontSize = 12.sp, color = t.textMuted)
+                        }
                     }
                 } else {
-                    LazyColumn(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxSize()) {
+                    LazyColumn(state = subscriptionListState, modifier = Modifier.fillMaxSize()) {
                         items(settings.subscriptions, key = { it.id }) { subscription ->
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp),
@@ -167,9 +310,11 @@ internal fun LibraryPage(
                                 Column(Modifier.weight(1f)) {
                                     Text(subscription.playlistName, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = t.text, maxLines = 1)
                                     Text(
-                                        "${subscription.platform} · 每 ${subscription.syncIntervalMinutes} 分钟 · ${subscription.lastTrackCount} 首",
+                                        "${subscription.platform} · 每 ${subscription.syncIntervalMinutes} 分钟 · ${subscription.lastTrackCount} 首 · ${subscription.nextSyncText()}",
                                         fontSize = 11.5.sp,
-                                        color = t.textMuted,
+                                        color = if (subscription.lastSyncError != null) t.error else t.textMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                                 OutlineAction("−间隔") {
@@ -211,124 +356,40 @@ internal fun LibraryPage(
                                     }
                                 }
                             }
-                            Box(Modifier.fillMaxWidth().height(1.dp).background(t.rowDivider))
+                            Box(Modifier.fillMaxWidth().height(UiMetrics.Hairline).background(t.rowDivider))
                         }
+                    }
+                    AppVerticalScrollbar(
+                        state = subscriptionListState,
+                        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 3.dp),
+                    )
                     }
                 }
             }
         }
 
-        Column(
-            modifier = Modifier.width(330.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            SectionCard("下载与整理偏好") {
-                SettingLabel("输出模板")
-                SmallTextField(template, "文件命名模板", Modifier.fillMaxWidth()) {
-                    template = it
-                    onUpdateSettings { current -> current.copy(outputTemplate = it) }
-                }
-                Spacer(Modifier.height(12.dp))
-                SettingLabel("音质策略")
-                ChoiceRow(
-                    options = QualityStrategy.entries.map { it to it.displayName() },
-                    selected = settings.qualityStrategy,
-                ) { onUpdateSettings { current -> current.copy(qualityStrategy = it) } }
-                Spacer(Modifier.height(12.dp))
-                SettingLabel("同名文件")
-                ChoiceRow(
-                    options = DownloadExistingPolicy.entries.map { it to it.displayName() },
-                    selected = settings.existingFilePolicy,
-                ) { onUpdateSettings { current -> current.copy(existingFilePolicy = it) } }
-                Spacer(Modifier.height(12.dp))
-                SettingLabel("歌词")
-                ChoiceRow(
-                    options = LyricsMode.entries.map { it to it.displayName() },
-                    selected = settings.lyricsMode,
-                ) { onUpdateSettings { current -> current.copy(lyricsMode = it) } }
-                Spacer(Modifier.height(12.dp))
-                ToggleLine("生成 cover 封面文件", settings.writeCoverSidecar) { value ->
-                    onUpdateSettings { it.copy(writeCoverSidecar = value) }
-                }
-                ToggleLine("生成 M3U8 播放列表", settings.writePlaylistM3u8) { value ->
-                    onUpdateSettings { it.copy(writePlaylistM3u8 = value) }
-                }
-            }
-
-            SectionCard("下载队列") {
-                NumberField("并发任务", settings.downloadConcurrency, 1, 16) { value ->
-                    onUpdateSettings { it.copy(downloadConcurrency = value) }
-                }
-                NumberField("失败重试次数", settings.downloadRetryCount, 0, 20) { value ->
-                    onUpdateSettings { it.copy(downloadRetryCount = value) }
-                }
-                NumberField("限速 KB/s（0 不限）", settings.downloadSpeedLimitKbps, 0, 1_000_000) { value ->
-                    onUpdateSettings { it.copy(downloadSpeedLimitKbps = value) }
-                }
-                NumberField("请求超时秒数", settings.downloadTimeoutSeconds.toInt(), 5, 3_600) { value ->
-                    onUpdateSettings { it.copy(downloadTimeoutSeconds = value.toLong()) }
-                }
-                Spacer(Modifier.height(8.dp))
-                SettingLabel("代理地址")
-                SmallTextField(proxy, "http://127.0.0.1:7890", Modifier.fillMaxWidth()) { value ->
-                    proxy = value
-                    onUpdateSettings { it.copy(proxyUrl = value.trim().takeIf(String::isNotBlank)) }
-                }
-                ToggleLine("自动使用系统代理", settings.useSystemProxy) { value ->
-                    onUpdateSettings { it.copy(useSystemProxy = value) }
-                }
-            }
-
-            SectionCard("桌面体验") {
-                ToggleLine("监听文件夹自动转换", settings.watchEnabled) { value ->
-                    onUpdateSettings { it.copy(watchEnabled = value) }
-                }
-                if (settings.watchFolders.isNotEmpty()) {
-                    settings.watchFolders.forEach { folder ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(folder, modifier = Modifier.weight(1f), fontSize = 11.5.sp, color = t.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            OutlineAction("移除") {
-                                onUpdateSettings { current -> current.copy(watchFolders = current.watchFolders - folder) }
-                            }
+    }
+    editingEntry?.let { entry ->
+        TagEditorOverlay(
+            entry = entry,
+            onSave = { title, artist, album, year, genre, composer, isrc, lyrics, cover ->
+                scope.launch {
+                    busy = true
+                    status = if (withContext(Dispatchers.IO) {
+                            maintenance.updateTags(entry, title, artist, album, year, genre, composer, isrc, lyrics, cover)
                         }
+                    ) {
+                        "标签已保存：${File(entry.path).name}"
+                    } else {
+                        "标签保存失败"
                     }
+                    entries = library.all().filter { it.path.startsWith(settings.outputDir) }
+                    busy = false
                 }
-                OutlineAction("添加监听文件夹") {
-                    FileDialogs.pickFolder("选择自动转换文件夹")?.let { picked ->
-                        onUpdateSettings { current -> current.copy(watchFolders = (current.watchFolders + picked.absolutePath).distinct()) }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                ToggleLine("下载完成后通知", settings.notifyOnComplete) { value ->
-                    onUpdateSettings { it.copy(notifyOnComplete = value) }
-                }
-                ToggleLine("下载时阻止系统休眠", settings.preventSleepWhileDownloading) { value ->
-                    onUpdateSettings { it.copy(preventSleepWhileDownloading = value) }
-                }
-                ToggleLine("关闭窗口后驻留托盘", settings.minimizeToTray) { value ->
-                    onUpdateSettings { it.copy(minimizeToTray = value) }
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    OutlineAction("导出设置") {
-                        val target = FileDialogs.saveFile("导出设置", "MusicUnlock-settings.json")
-                        if (target != null) status = if (SettingsPortability.export(target)) "设置已导出" else "设置导出失败"
-                    }
-                    OutlineAction("导入设置") {
-                        FileDialogs.pickFile("导入设置", listOf("json"))?.let { source ->
-                            status = runCatching { SettingsPortability.import(source); "设置已导入" }.getOrElse { it.message ?: "设置导入失败" }
-                        }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlineAction("导出诊断日志") {
-                    val target = FileDialogs.saveFile("导出诊断日志", "MusicUnlock-diagnostics.txt")
-                    if (target != null) {
-                        status = if (Diagnostics.export(target)) "诊断日志已导出：${target.absolutePath}" else "诊断日志导出失败"
-                    }
-                }
-            }
-        }
+            },
+            onClose = { editingEntry = null },
+        )
+    }
     }
 }
 
@@ -337,10 +398,10 @@ private fun SectionCard(title: String, modifier: Modifier = Modifier.fillMaxWidt
     val t = cleanTokens()
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(UiMetrics.CardRadius))
             .background(t.surface)
-            .border(1.dp, t.cardBorder, RoundedCornerShape(14.dp))
-            .padding(14.dp),
+            .border(1.dp, t.cardBorder, RoundedCornerShape(UiMetrics.CardRadius))
+            .padding(16.dp),
     ) {
         Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = t.text)
         Spacer(Modifier.height(10.dp))
@@ -356,22 +417,18 @@ private fun SummaryPill(text: String) {
 
 @Composable
 private fun PrimaryAction(text: String, enabled: Boolean = true, onClick: () -> Unit) {
-    val t = cleanTokens()
-    Button(
+    AppTextAction(
+        text = text,
         onClick = onClick,
         enabled = enabled,
-        colors = ButtonDefaults.buttonColors(containerColor = t.primary, contentColor = t.onPrimary),
-        shape = RoundedCornerShape(9.dp),
+        filled = true,
         modifier = Modifier.height(36.dp),
-    ) { Text(text, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold) }
+    )
 }
 
 @Composable
 private fun OutlineAction(text: String, onClick: () -> Unit) {
-    val t = cleanTokens()
-    Box(
-        modifier = Modifier.clip(RoundedCornerShape(9.dp)).border(1.dp, t.border, RoundedCornerShape(9.dp)).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 7.dp),
-    ) { Text(text, fontSize = 12.sp, color = t.textSecondary) }
+    AppTextAction(text = text, onClick = onClick, outlined = true)
 }
 
 @Composable
@@ -389,7 +446,7 @@ private fun SmallTextField(value: String, placeholder: String, modifier: Modifie
             focusedIndicatorColor = t.primary,
             unfocusedIndicatorColor = t.border,
         ),
-        shape = RoundedCornerShape(9.dp),
+        shape = RoundedCornerShape(UiMetrics.ControlRadius),
         modifier = modifier.height(46.dp),
     )
 }
@@ -401,17 +458,12 @@ private fun <T> ChoiceRow(options: List<Pair<T, String>>, selected: T, onSelect:
         options.chunked(3).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 row.forEach { (value, label) ->
-                    val active = value == selected
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (active) t.primarySoft else t.surfaceSoft)
-                            .border(1.dp, if (active) t.primary.copy(alpha = 0.45f) else t.border, RoundedCornerShape(8.dp))
-                            .clickable { onSelect(value) }
-                            .padding(vertical = 7.dp),
-                        contentAlignment = Alignment.Center,
-                    ) { Text(label, fontSize = 11.5.sp, color = if (active) t.primary else t.textSecondary) }
+                    AppChoiceChip(
+                        text = label,
+                        selected = value == selected,
+                        onClick = { onSelect(value) },
+                        modifier = Modifier.weight(1f),
+                    )
                 }
                 repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
             }
@@ -422,20 +474,19 @@ private fun <T> ChoiceRow(options: List<Pair<T, String>>, selected: T, onSelect:
 @Composable
 private fun ToggleLine(text: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     val t = cleanTokens()
+    val interaction = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
     Row(
-        modifier = Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(vertical = 7.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (hovered) t.surfaceSoft else Color.Transparent)
+            .hoverable(interaction)
+            .clickable(interactionSource = interaction, indication = null) { onChange(!checked) }
+            .padding(horizontal = 4.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier.width(36.dp).height(20.dp).clip(RoundedCornerShape(10.dp))
-                .background(if (checked) t.primary else t.border)
-                .padding(2.dp),
-        ) {
-            Box(
-                Modifier.fillMaxHeight().width(16.dp).clip(RoundedCornerShape(8.dp)).background(t.surface)
-                    .align(if (checked) Alignment.CenterEnd else Alignment.CenterStart),
-            )
-        }
+        AppToggle(checked = checked, onCheckedChange = onChange)
         Spacer(Modifier.width(9.dp))
         Text(text, fontSize = 12.5.sp, color = t.text)
     }
@@ -447,13 +498,12 @@ private fun NumberField(label: String, value: Int, min: Int, max: Int, onChange:
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(label, modifier = Modifier.weight(1f), fontSize = 12.5.sp, color = t.text)
         listOf(-1 to "−", 1 to "+").forEach { (delta, symbol) ->
-            Box(
-                modifier = Modifier.width(28.dp).height(28.dp).clip(RoundedCornerShape(7.dp)).background(t.surfaceSoft).clickable {
-                    onChange((value + delta).coerceIn(min, max))
-                },
-                contentAlignment = Alignment.Center,
-            ) { Text(symbol, fontSize = 15.sp, color = t.textSecondary) }
-            Spacer(Modifier.width(5.dp))
+            AppTextAction(
+                text = symbol,
+                onClick = { onChange((value + delta).coerceIn(min, max)) },
+                modifier = Modifier.width(30.dp),
+            )
+            Spacer(Modifier.width(4.dp))
         }
         Text(value.toString(), modifier = Modifier.width(54.dp), fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = t.text)
     }
@@ -464,24 +514,22 @@ private fun SettingLabel(text: String) {
     Text(text, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = cleanTokens().textMuted, modifier = Modifier.padding(bottom = 6.dp))
 }
 
-private fun QualityStrategy.displayName(): String = when (this) {
-    QualityStrategy.HIGHEST -> "最高"
-    QualityStrategy.LOSSLESS_FIRST -> "无损优先"
-    QualityStrategy.MP3_320 -> "320k"
-    QualityStrategy.BALANCED -> "均衡"
-    QualityStrategy.SMALLEST -> "最小"
+private fun humanBytes(bytes: Long): String = when {
+    bytes >= 1L shl 30 -> String.format(java.util.Locale.ROOT, "%.1f GB", bytes / (1L shl 30).toDouble())
+    bytes >= 1L shl 20 -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1L shl 20).toDouble())
+    bytes >= 1L shl 10 -> String.format(java.util.Locale.ROOT, "%.0f KB", bytes / (1L shl 10).toDouble())
+    else -> "$bytes B"
 }
 
-private fun DownloadExistingPolicy.displayName(): String = when (this) {
-    DownloadExistingPolicy.SKIP -> "跳过"
-    DownloadExistingPolicy.OVERWRITE -> "覆盖"
-    DownloadExistingPolicy.RENAME -> "另存"
-    DownloadExistingPolicy.UPGRADE -> "升级"
+private fun musicunlock.settings.PlaylistSubscription.nextSyncText(): String {
+    if (lastSyncError != null) return "上次失败：$lastSyncError"
+    if (lastSyncAt <= 0L) return "等待首次同步"
+    val next = lastSyncAt + syncIntervalMinutes * 60_000L
+    return if (next <= System.currentTimeMillis()) "即将同步" else "下次 ${java.time.Instant.ofEpochMilli(next).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm"))}"
 }
 
-private fun LyricsMode.displayName(): String = when (this) {
-    LyricsMode.OFF -> "关闭"
-    LyricsMode.SIDECAR -> "LRC"
-    LyricsMode.EMBED -> "嵌入"
-    LyricsMode.BOTH -> "两者"
+private fun LibrarySort.displayName(): String = when (this) {
+    LibrarySort.TITLE -> "标题"
+    LibrarySort.ARTIST -> "歌手"
+    LibrarySort.ALBUM -> "专辑"
 }

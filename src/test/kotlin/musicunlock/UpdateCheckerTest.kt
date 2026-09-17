@@ -17,10 +17,12 @@ class UpdateCheckerTest {
 
     @Test
     fun `解析最新发行版本与页面地址`() {
-        val json = """{"tag_name":"v1.2.0","html_url":"https://github.com/Lin-M11/MusicUnlock/releases/tag/v1.2.0","draft":false,"prerelease":false}"""
+        val json = """{"tag_name":"v1.2.0","html_url":"https://github.com/Lin-M11/MusicUnlock/releases/tag/v1.2.0","draft":false,"prerelease":false,"assets":[{"name":"MusicUnlock.exe","browser_download_url":"https://example.test/MusicUnlock.exe","size":123}]}"""
         val release = UpdateChecker.parseLatest(json)
         assertEquals("1.2.0", release?.version)
         assertEquals("https://github.com/Lin-M11/MusicUnlock/releases/tag/v1.2.0", release?.pageUrl)
+        assertEquals("MusicUnlock.exe", release?.assets?.single()?.name)
+        assertEquals(123L, release?.assets?.single()?.size)
     }
 
     @Test

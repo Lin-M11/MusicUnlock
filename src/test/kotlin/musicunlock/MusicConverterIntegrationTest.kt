@@ -2,13 +2,17 @@ package musicunlock
 
 import kotlinx.coroutines.runBlocking
 import musicunlock.service.AudioTranscoder
+import musicunlock.service.ConversionCancelledException
 import musicunlock.service.MusicConverter
+import musicunlock.service.TranscodeFormat
 import musicunlock.settings.OutputFormat
+import musicunlock.settings.DownloadExistingPolicy
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -93,6 +97,30 @@ class MusicConverterIntegrationTest {
     }
 
     @Test
+    fun existingOutputCanBeRenamed() {
+        val sample = load("mflac_map_raw.bin") + load("mflac_map_suffix.bin")
+        val target = load("mflac_map_target.bin")
+        val dir = Files.createTempDirectory("musicunlock-rename-test")
+        val input = dir.resolve("sample.mflac")
+        val output = dir.resolve("sample.flac")
+        Files.write(input, sample)
+        Files.write(output, "stale".toByteArray())
+
+        val error = MusicConverter.convertOne(
+            inputPath = input.toString(),
+            outputDir = dir.toString(),
+            outputFormat = OutputFormat.ORIGINAL,
+            bitrateKbps = 320,
+            forceOverwrite = false,
+            existingFilePolicy = DownloadExistingPolicy.RENAME,
+        ).error
+
+        assertNull(error)
+        assertTrue(Files.exists(output))
+        assertContentEquals(target, Files.readAllBytes(dir.resolve("sample (2).flac")))
+    }
+
+    @Test
     fun unsupportedExtensionRejected() {
         val dir = Files.createTempDirectory("musicunlock-test2")
         val input = dir.resolve("sample.txt")
@@ -124,6 +152,48 @@ class MusicConverterIntegrationTest {
         val output = dir.resolve("sample.mp3")
         assertTrue(Files.exists(output), "MP3 output should exist")
         assertTrue(Files.size(output) > 0L, "MP3 output should not be empty")
+    }
+
+    @Test
+    fun transcodeToM4aUsesGenericOutputPipeline() {
+        val source = Files.createTempFile("musicunlock-transcode-source", ".flac")
+        val target = source.parent.resolve(source.fileName.toString().substringBeforeLast('.') + ".m4a")
+        Files.write(source, load("mflac_map_target.bin"))
+
+        val error = AudioTranscoder.transcode(source.toFile(), target.toFile(), TranscodeFormat.M4A, 192)
+
+        assertNull(error)
+        assertTrue(Files.size(target) > 0L)
+        Files.deleteIfExists(source)
+        Files.deleteIfExists(target)
+    }
+
+    @Test
+    fun transcodeStopsWhenCancelled() {
+        val source = Files.createTempFile("musicunlock-transcode-cancel", ".flac")
+        val target = source.resolveSibling("cancelled.m4a")
+        Files.write(source, load("mflac_map_target.bin"))
+
+        assertFailsWith<ConversionCancelledException> {
+            AudioTranscoder.transcode(source.toFile(), target.toFile(), TranscodeFormat.M4A, shouldContinue = { false })
+        }
+
+        assertTrue(!Files.exists(target))
+        Files.deleteIfExists(source)
+    }
+
+    @Test
+    fun bundledFfmpegSupportsEveryOutputFormat() {
+        val dir = Files.createTempDirectory("musicunlock-transcode-matrix")
+        val source = dir.resolve("source.flac")
+        Files.write(source, load("mflac_map_target.bin"))
+
+        TranscodeFormat.entries.forEach { format ->
+            val target = dir.resolve("output.${format.extension}")
+            val error = AudioTranscoder.transcode(source.toFile(), target.toFile(), format, 192)
+            assertNull(error, "${format.name} should be supported")
+            assertTrue(Files.size(target) > 0L, "${format.name} output should not be empty")
+        }
     }
 
     @Test

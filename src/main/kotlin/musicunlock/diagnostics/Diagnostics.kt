@@ -11,8 +11,19 @@ import java.util.concurrent.atomic.AtomicInteger
 /** 内存日志、敏感信息脱敏和导出诊断快照。 */
 object Diagnostics {
     private const val MAX_LINES = 800
+    private const val MAX_FILE_BYTES = 2L * 1024L * 1024L
     private val logs = ArrayDeque<String>()
     private val sequence = AtomicInteger()
+    private val fileLock = Any()
+
+    @Volatile
+    private var persistentFile: File? = null
+
+    /** 开启滚动日志；多次调用只更新目标文件，不会重置内存日志。 */
+    fun initialize(file: File = defaultDiagnosticsFile()) {
+        persistentFile = file.absoluteFile
+        log("应用日志已启动")
+    }
 
     fun log(message: String) {
         val line = "${Instant.now()}  ${redact(message)}"
@@ -21,6 +32,7 @@ object Diagnostics {
             while (logs.size > MAX_LINES) logs.removeLast()
         }
         sequence.incrementAndGet()
+        appendToFile(line)
     }
 
     fun recentLines(limit: Int = 300): List<String> = synchronized(logs) {
@@ -41,7 +53,8 @@ object Diagnostics {
             appendLine("登录状态: 网易云=${settings.neteaseCookie != null} QQ=${settings.qqCookie != null} 酷狗=${settings.kugouCookie != null} 酷我=${settings.kuwoCookie != null}")
             appendLine()
             appendLine("最近日志:")
-            if (logs.isEmpty()) appendLine("(无)") else logs.forEach { appendLine(it) }
+            val snapshotLines = if (persistentFile != null) recentPersistentLines(limit = 300) else logs.toList()
+            if (snapshotLines.isEmpty()) appendLine("(无)") else snapshotLines.forEach { appendLine(it) }
         }
     }
 
@@ -60,4 +73,41 @@ object Diagnostics {
             .replace(value) { "${it.groupValues[1]}***" }
         return value
     }
+
+    internal fun disablePersistence() {
+        persistentFile = null
+    }
+
+    private fun appendToFile(line: String) {
+        val target = persistentFile ?: return
+        val bytes = (line + System.lineSeparator()).toByteArray(Charsets.UTF_8)
+        synchronized(fileLock) {
+            runCatching {
+                target.parentFile?.mkdirs()
+                rotateIfNeeded(target, bytes.size.toLong())
+                target.appendBytes(bytes)
+            }
+        }
+    }
+
+    private fun rotateIfNeeded(target: File, incomingBytes: Long) {
+        if (!target.isFile || target.length() + incomingBytes <= MAX_FILE_BYTES) return
+        val first = File(target.parentFile, "${target.name}.1")
+        val second = File(target.parentFile, "${target.name}.2")
+        second.delete()
+        if (first.isFile) first.renameTo(second)
+        target.renameTo(first)
+    }
+
+    private fun recentPersistentLines(limit: Int): List<String> {
+        val target = persistentFile ?: return emptyList()
+        return runCatching {
+            if (!target.isFile) return emptyList()
+            val tail = target.readLines().takeLast(limit.coerceAtLeast(1))
+            tail.asReversed()
+        }.getOrDefault(emptyList())
+    }
 }
+
+fun defaultDiagnosticsFile(): File =
+    File(System.getProperty("user.home"), ".musicunlock/logs/musicunlock.log")

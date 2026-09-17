@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -15,7 +16,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
@@ -64,6 +68,7 @@ internal fun DiscoverPage(
     var platform by remember { mutableStateOf<MusicPlatform?>(null) }
     var results by remember { mutableStateOf<List<MusicSearchResult>>(emptyList()) }
     var status by remember { mutableStateOf("输入歌名、歌手、专辑或直接粘贴分享链接") }
+    val resultListState = rememberLazyListState()
     var busy by remember { mutableStateOf(false) }
     var qualityInfo by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var crossMatches by remember { mutableStateOf<Map<String, List<CrossPlatformMatch>>>(emptyMap()) }
@@ -214,7 +219,7 @@ internal fun DiscoverPage(
 
     Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Column(
-            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(t.surface).border(1.dp, t.cardBorder, RoundedCornerShape(14.dp)).padding(14.dp),
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(UiMetrics.CardRadius)).background(t.surface).border(1.dp, t.cardBorder, RoundedCornerShape(UiMetrics.CardRadius)).padding(14.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
@@ -247,14 +252,21 @@ internal fun DiscoverPage(
         }
 
         Box(
-            modifier = Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(t.surface).border(1.dp, t.cardBorder, RoundedCornerShape(14.dp)),
+            modifier = Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(UiMetrics.CardRadius)).background(t.surface).border(1.dp, t.cardBorder, RoundedCornerShape(UiMetrics.CardRadius)),
         ) {
             if (results.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("搜索结果会显示歌曲、歌单、专辑和歌手", fontSize = 13.sp, color = t.textMuted)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        AppEmptyIcon(Icons.Outlined.Search)
+                        Spacer(Modifier.height(12.dp))
+                        Text("搜索歌曲、歌单、专辑和歌手", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = t.text)
+                        Spacer(Modifier.height(4.dp))
+                        Text("也可以直接粘贴任一平台的分享链接", fontSize = 12.sp, color = t.textMuted)
+                    }
                 }
             } else {
-                LazyColumn(Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize()) {
+                LazyColumn(state = resultListState, modifier = Modifier.fillMaxSize()) {
                     items(results, key = { "${it.kind}:${it.id}" }) { result ->
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
@@ -307,8 +319,13 @@ internal fun DiscoverPage(
                             }
                             SmallAction(if (result.kind == SearchResultKind.SONG) "下载" else "加入队列") { enqueueResult(result) }
                         }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(t.rowDivider))
+                        Box(Modifier.fillMaxWidth().height(UiMetrics.Hairline).background(t.rowDivider))
                     }
+                }
+                AppVerticalScrollbar(
+                    state = resultListState,
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 3.dp),
+                )
                 }
             }
         }
@@ -319,31 +336,24 @@ private fun MusicSearchResult.key(): String = "${platform.id}:$kind:$id"
 
 @Composable
 private fun DiscoverChoice(text: String, selected: Boolean, onClick: () -> Unit) {
-    val t = cleanTokens()
-    Box(
-        modifier = Modifier.clip(RoundedCornerShape(9.dp)).background(if (selected) t.primarySoft else t.surfaceSoft)
-            .border(1.dp, if (selected) t.primary.copy(alpha = 0.5f) else t.border, RoundedCornerShape(9.dp))
-            .clickable(onClick = onClick).padding(horizontal = 11.dp, vertical = 7.dp),
-    ) { Text(text, fontSize = 11.5.sp, color = if (selected) t.primary else t.textSecondary) }
+    AppChoiceChip(text = text, selected = selected, onClick = onClick)
 }
 
 @Composable
 private fun DiscoverAction(text: String, primary: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
-    val t = cleanTokens()
-    Box(
-        modifier = Modifier.clip(RoundedCornerShape(9.dp))
-            .background(if (primary) t.primary else t.surfaceSoft)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 9.dp),
-    ) { Text(text, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = if (primary) t.onPrimary else t.textSecondary) }
+    AppTextAction(
+        text = text,
+        onClick = onClick,
+        enabled = enabled,
+        filled = primary,
+        outlined = !primary,
+        modifier = Modifier.height(UiMetrics.ControlHeight),
+    )
 }
 
 @Composable
 private fun SmallAction(text: String, onClick: () -> Unit) {
-    val t = cleanTokens()
-    Box(Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onClick).padding(horizontal = 7.dp, vertical = 6.dp)) {
-        Text(text, fontSize = 11.5.sp, color = t.primary)
-    }
+    AppTextAction(text = text, onClick = onClick, primary = true)
 }
 
 @Composable

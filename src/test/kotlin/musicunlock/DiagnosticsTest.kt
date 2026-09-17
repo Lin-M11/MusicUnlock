@@ -4,6 +4,7 @@ import musicunlock.diagnostics.Diagnostics
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.file.Files
 
 class DiagnosticsTest {
     @Test
@@ -14,5 +15,19 @@ class DiagnosticsTest {
         assertFalse(redacted.contains("xyz"))
         assertFalse(redacted.contains("secret"))
         assertTrue(redacted.contains("***"))
+    }
+
+    @Test
+    fun `persistent log writes redacted lines`() {
+        val file = Files.createTempDirectory("musicunlock-diagnostics").resolve("app.log").toFile()
+        try {
+            Diagnostics.initialize(file)
+            Diagnostics.log("token=secret-value")
+            val text = file.readText()
+            assertTrue(text.contains("token=***"))
+            assertFalse(text.contains("secret-value"))
+        } finally {
+            Diagnostics.disablePersistence()
+        }
     }
 }

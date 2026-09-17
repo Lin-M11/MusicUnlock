@@ -9,11 +9,19 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 /** GitHub Releases 上的最新正式版本。 */
+data class ReleaseAsset(
+    val name: String,
+    val downloadUrl: String,
+    val size: Long = 0L,
+)
+
 data class ReleaseInfo(
     /** 去掉前导 v 的版本号，例如 1.2.0。 */
     val version: String,
     /** Release 页面地址，用于打开下载入口。 */
     val pageUrl: String,
+    /** Release 中的可下载资源。 */
+    val assets: List<ReleaseAsset> = emptyList(),
 )
 
 /**
@@ -61,7 +69,21 @@ object UpdateChecker {
         val root = JsonParser.parseString(json).asJsonObject
         val tag = root.get("tag_name")?.asString?.trim().orEmpty()
         val page = root.get("html_url")?.asString?.trim().orEmpty()
-        if (tag.isBlank()) null else ReleaseInfo(normalize(tag), page.ifBlank { AppLinks.RELEASES_PAGE })
+        if (tag.isBlank()) {
+            null
+        } else {
+            val assets = root.getAsJsonArray("assets")?.mapNotNull { element ->
+                val item = element.asJsonObject
+                val name = item.get("name")?.asString?.trim().orEmpty()
+                val url = item.get("browser_download_url")?.asString?.trim().orEmpty()
+                if (name.isBlank() || url.isBlank()) null else ReleaseAsset(
+                    name = name,
+                    downloadUrl = url,
+                    size = runCatching { item.get("size")?.asLong }.getOrNull() ?: 0L,
+                )
+            }.orEmpty()
+            ReleaseInfo(normalize(tag), page.ifBlank { AppLinks.RELEASES_PAGE }, assets)
+        }
     } catch (e: Exception) {
         null
     }

@@ -24,6 +24,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,8 +44,11 @@ import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.outlined.Add
@@ -53,14 +57,19 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Album
+import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.automirrored.outlined.QueueMusic
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.LibraryMusic
-import androidx.compose.material.icons.outlined.MusicNote
-import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -103,6 +112,8 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -137,18 +148,26 @@ import musicunlock.playlist.MatchOutcome
 import musicunlock.playlist.PlaylistImport
 import musicunlock.qq.QqDownloadPage
 import musicunlock.qq.QqMusicApi
+import musicunlock.service.ConversionTaskManager
+import musicunlock.service.ConversionTaskState
 import musicunlock.service.MusicConverter
 import musicunlock.settings.AppSettings
+import musicunlock.settings.DownloadExistingPolicy
 import musicunlock.settings.OutputFormat
 import musicunlock.settings.SettingsStore
 import musicunlock.settings.SettingsUpdate
 import musicunlock.settings.outputBitrates
+import musicunlock.settings.usesBitrate
 import musicunlock.sync.CrossPlatformMatcher
 import musicunlock.sync.SubscriptionManager
 import musicunlock.watch.FolderWatcherService
 import musicunlock.desktop.DesktopIntegration
+import musicunlock.desktop.AutoStartService
 import musicunlock.update.ReleaseInfo
 import musicunlock.update.UpdateChecker
+import musicunlock.update.UpdateDownloader
+import musicunlock.update.UpdateInstaller
+import musicunlock.update.currentPlatform
 import java.awt.Desktop
 import java.awt.Dimension
 import java.awt.datatransfer.DataFlavor
@@ -160,13 +179,42 @@ import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
 
 /** 单个文件的转换状态。 */
-enum class FileStatus { PENDING, CONVERTING, DONE, SKIPPED, FAILED, DUPLICATE }
+enum class FileStatus { PENDING, CONVERTING, DONE, SKIPPED, FAILED, DUPLICATE, PAUSED, CANCELLED }
 
 class FileItem(val path: String, val name: String) {
     var status by mutableStateOf(FileStatus.PENDING)
     var message by mutableStateOf<String?>(null)
+    var taskId by mutableStateOf<String?>(null)
     /** 是否勾选参与转换；歌单导入会按匹配结果重设。 */
     var selected by mutableStateOf(true)
+}
+
+private fun ConversionTaskState.toFileStatus(): FileStatus = when (this) {
+    ConversionTaskState.QUEUED -> FileStatus.PENDING
+    ConversionTaskState.RUNNING -> FileStatus.CONVERTING
+    ConversionTaskState.COMPLETED -> FileStatus.DONE
+    ConversionTaskState.SKIPPED -> FileStatus.SKIPPED
+    ConversionTaskState.FAILED -> FileStatus.FAILED
+    ConversionTaskState.PAUSED -> FileStatus.PAUSED
+    ConversionTaskState.CANCELLED -> FileStatus.CANCELLED
+    ConversionTaskState.DUPLICATE -> FileStatus.DUPLICATE
+}
+
+private fun OutputFormat.displayName(): String = when (this) {
+    OutputFormat.ORIGINAL -> "原始"
+    OutputFormat.MP3 -> "MP3"
+    OutputFormat.FLAC -> "FLAC"
+    OutputFormat.M4A -> "M4A"
+    OutputFormat.OGG -> "OGG"
+    OutputFormat.OPUS -> "Opus"
+    OutputFormat.WAV -> "WAV"
+}
+
+private fun DownloadExistingPolicy.localDisplayName(): String = when (this) {
+    DownloadExistingPolicy.SKIP -> "跳过"
+    DownloadExistingPolicy.OVERWRITE -> "覆盖"
+    DownloadExistingPolicy.RENAME -> "另存"
+    DownloadExistingPolicy.UPGRADE -> "升级"
 }
 
 // ============================================================
@@ -182,12 +230,18 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
     var importOpen by remember { mutableStateOf(false) }
     val files = remember { mutableStateListOf<FileItem>() }
     val libraryIndex = remember { LibraryIndex() }
+    val conversionManager = remember { ConversionTaskManager(library = libraryIndex) }
     val downloadManager = remember { DownloadTaskManager(library = libraryIndex, settingsProvider = { SettingsStore.load() }) }
     var sessionRevision by remember { mutableStateOf(0) }
     val updateSettings: SettingsUpdate = { transform -> settings = SettingsStore.update(transform) }
     val libraryMaintenance = remember { LibraryMaintenanceService(libraryIndex) }
     val crossPlatformMatcher = remember { CrossPlatformMatcher(libraryMaintenance) }
-    val folderWatcher = remember { FolderWatcherService(settingsProvider = { SettingsStore.load() }) }
+    val folderWatcher = remember {
+        FolderWatcherService(
+            settingsProvider = { SettingsStore.load() },
+            conversionManager = conversionManager,
+        )
+    }
     val downloadTaskState by downloadManager.tasks.collectAsState()
     val activeDownloadCount = downloadTaskState.count {
         it.state in setOf(DownloadTaskState.DOWNLOADING, DownloadTaskState.TRANSCODING, DownloadTaskState.TAGGING, DownloadTaskState.QUEUED)
@@ -204,7 +258,23 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
         OnlineNetwork.configure(settings)
     }
     LaunchedEffect(Unit) { subscriptionManager.start(this) }
+    LaunchedEffect(subscriptionManager) {
+        val listener = subscriptionManager.addListener { result ->
+            val current = SettingsStore.load()
+            if (!current.subscriptionNotifications) return@addListener
+            val body = if (result.error != null) {
+                "${result.playlistName}：${result.error}"
+            } else {
+                "${result.playlistName}：新增 ${result.added} 首，已有 ${result.skipped} 首"
+            }
+            DesktopIntegration.notify(if (result.error == null) "歌单追更完成" else "歌单追更失败", body)
+        }
+        try { awaitCancellation() } finally { listener.close() }
+    }
     LaunchedEffect(Unit) { folderWatcher.start(this) }
+    LaunchedEffect(settings.launchAtLogin) {
+        AutoStartService.setEnabled(settings.launchAtLogin)
+    }
     LaunchedEffect(downloadManager) {
         val listener = downloadManager.addListener { task ->
             val current = SettingsStore.load()
@@ -215,6 +285,18 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
                     else -> "下载失败"
                 }
                 DesktopIntegration.notify(title, "${task.title} - ${task.artist}")
+            }
+        }
+        try { awaitCancellation() } finally { listener.close() }
+    }
+    LaunchedEffect(conversionManager) {
+        val listener = conversionManager.addListener { task ->
+            val current = SettingsStore.load()
+            if (current.notifyOnComplete && task.state in setOf(ConversionTaskState.COMPLETED, ConversionTaskState.FAILED)) {
+                DesktopIntegration.notify(
+                    if (task.state == ConversionTaskState.COMPLETED) "转换完成" else "转换失败",
+                    File(task.inputPath).name,
+                )
             }
         }
         try { awaitCancellation() } finally { listener.close() }
@@ -236,6 +318,7 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
                 onUpdateSettings = updateSettings,
                 sessionRevision = sessionRevision,
                 files = files,
+                conversionManager = conversionManager,
                 downloadManager = downloadManager,
                 subscriptionManager = subscriptionManager,
                 libraryMaintenance = libraryMaintenance,
@@ -328,6 +411,7 @@ fun MainScreen(
     onUpdateSettings: SettingsUpdate,
     sessionRevision: Int,
     files: SnapshotStateList<FileItem>,
+    conversionManager: ConversionTaskManager,
     downloadManager: DownloadTaskManager,
     subscriptionManager: SubscriptionManager,
     libraryMaintenance: LibraryMaintenanceService,
@@ -336,26 +420,56 @@ fun MainScreen(
     onOpenImport: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    var converting by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf(0f) }
-    var doneCount by remember { mutableStateOf(0) }
-    var skippedCount by remember { mutableStateOf(0) }
-    var failCount by remember { mutableStateOf(0) }
     var page by remember { mutableStateOf(0) }
     var update by remember { mutableStateOf<ReleaseInfo?>(null) }
+    var updateStatus by remember { mutableStateOf<String?>(null) }
+    var updateBusy by remember { mutableStateOf(false) }
 
     // 启动时检查一次 GitHub Releases；失败静默，不阻塞界面
     LaunchedEffect(Unit) {
         update = withContext(Dispatchers.IO) { UpdateChecker.check(BuildInfo.VERSION) }
     }
+    LaunchedEffect(update?.version, settings.autoDownloadUpdates) {
+        val release = update ?: return@LaunchedEffect
+        if (!settings.autoDownloadUpdates || updateBusy) return@LaunchedEffect
+        val asset = UpdateDownloader.selectAsset(release, currentPlatform()) ?: return@LaunchedEffect
+        updateBusy = true
+        val target = File(System.getProperty("user.home"), "Downloads/${asset.name}")
+        updateStatus = withContext(Dispatchers.IO) {
+            runCatching { UpdateDownloader.download(release, target, currentPlatform()) }
+                .fold({ "已自动下载 ${it.file.name} 并完成校验" }, { "自动更新下载失败：${it.message}" })
+        }
+        updateBusy = false
+    }
 
     val t = cleanTokens()
+    val conversionTasks by conversionManager.tasks.collectAsState()
     val downloadTasks by downloadManager.tasks.collectAsState()
     val activeDownloads = downloadTasks.count { it.state !in setOf(DownloadTaskState.COMPLETED, DownloadTaskState.FAILED, DownloadTaskState.CANCELLED, DownloadTaskState.SKIPPED, DownloadTaskState.PAUSED) }
+    val fileTaskIds = files.mapNotNull { it.taskId }.toSet()
+    val trackedConversionTasks = conversionTasks.filter { it.id in fileTaskIds }
+    val converting = trackedConversionTasks.any { it.state == ConversionTaskState.QUEUED || it.state == ConversionTaskState.RUNNING }
+    val progress = if (trackedConversionTasks.isEmpty()) 0f else {
+        trackedConversionTasks.sumOf { task ->
+            if (task.isTerminal) 1.0 else task.progress.toDouble()
+        }.toFloat() / trackedConversionTasks.size
+    }
+    val doneCount = trackedConversionTasks.count { it.state == ConversionTaskState.COMPLETED }
+    val skippedCount = trackedConversionTasks.count { it.state == ConversionTaskState.SKIPPED }
+    val failCount = trackedConversionTasks.count { it.state == ConversionTaskState.FAILED }
     val totalBytes = files.sumOf { File(it.path).length() }
-    val convertingCount = files.count { it.status == FileStatus.CONVERTING }
+    val convertingCount = conversionTasks.count { it.state == ConversionTaskState.RUNNING }
     val pendingCount = files.count { it.selected && it.status == FileStatus.PENDING }
     val selectedCount = files.count { it.selected }
+
+    LaunchedEffect(conversionTasks) {
+        val byId = conversionTasks.associateBy { it.id }
+        files.forEach { item ->
+            val task = item.taskId?.let(byId::get) ?: return@forEach
+            item.status = task.state.toFileStatus()
+            item.message = task.message
+        }
+    }
 
     Row(Modifier.fillMaxSize().background(t.bg)) {
         AppSidebar(
@@ -368,6 +482,8 @@ fun MainScreen(
             totalCount = files.size,
             totalSize = humanSize(totalBytes),
             convertingCount = convertingCount,
+            activeConversions = conversionTasks.count { it.state == ConversionTaskState.QUEUED || it.state == ConversionTaskState.RUNNING },
+            queuedConversions = conversionTasks.count { it.state == ConversionTaskState.QUEUED },
             activeDownloads = activeDownloads,
             queuedDownloads = downloadTasks.count { it.state == DownloadTaskState.QUEUED },
             subscriptionCount = settings.subscriptions.count { it.enabled },
@@ -393,6 +509,29 @@ fun MainScreen(
                 UpdateBanner(
                     release = release,
                     current = BuildInfo.VERSION,
+                    status = updateStatus,
+                    busy = updateBusy,
+                    onDownload = {
+                        if (!updateBusy) {
+                            val asset = UpdateDownloader.selectAsset(release, currentPlatform())
+                            if (asset != null) {
+                                updateBusy = true
+                                scope.launch {
+                                    val target = File(System.getProperty("user.home"), "Downloads/${asset.name}")
+                                    updateStatus = withContext(Dispatchers.IO) {
+                                        runCatching { UpdateDownloader.download(release, target, currentPlatform()) }
+                                            .fold({
+                                                UpdateInstaller.openInstaller(it.file)
+                                                "已下载 ${it.file.name} 并完成校验"
+                                            }, { "下载失败：${it.message}" })
+                                    }
+                                    updateBusy = false
+                                }
+                            } else {
+                                updateStatus = "当前版本没有适用于本机的安装包"
+                            }
+                        }
+                    },
                     onDismiss = { update = null },
                 )
             }
@@ -433,12 +572,16 @@ fun MainScreen(
                         onOutputDirChange = { value -> onUpdateSettings { it.copy(outputDir = value) } },
                         dedup = settings.dedup,
                         onDedupChange = { value -> onUpdateSettings { it.copy(dedup = value) } },
-                        skipExisting = settings.skipExisting,
-                        onSkipExistingChange = { value -> onUpdateSettings { it.copy(skipExisting = value) } },
                         outputFormat = settings.outputFormat,
                         onOutputFormatChange = { value -> onUpdateSettings { it.copy(outputFormat = value) } },
                         bitrateKbps = settings.bitrateKbps,
                         onBitrateChange = { value -> onUpdateSettings { it.copy(bitrateKbps = value) } },
+                        outputTemplate = settings.localOutputTemplate,
+                        onOutputTemplateChange = { value -> onUpdateSettings { it.copy(localOutputTemplate = value) } },
+                        existingFilePolicy = settings.localExistingFilePolicy,
+                        onExistingFilePolicyChange = { value ->
+                            onUpdateSettings { it.copy(localExistingFilePolicy = value, skipExisting = value == DownloadExistingPolicy.SKIP) }
+                        },
                         converting = converting,
                         progress = progress,
                         doneCount = doneCount,
@@ -456,54 +599,22 @@ fun MainScreen(
                     pendingCount = pendingCount,
                     enabled = !converting && selectedCount > 0,
                     onConvert = {
-                        val chosen = files.filter { it.selected }
+                        val chosen = files.filter { it.selected && it.path.isNotBlank() }
                         if (chosen.isEmpty()) return@Footer
-                        converting = true
-                        doneCount = 0
-                        skippedCount = 0
-                        failCount = 0
-                        progress = 0f
-                        val targets = if (settings.dedup) dedupFiles(chosen) else chosen
-                        val output = settings.outputDir
-                        val outputFormat = settings.outputFormat
-                        val bitrateKbps = settings.bitrateKbps
-                        val forceOverwrite = !settings.skipExisting
-                        scope.launch {
-                            val total = targets.size
-                            var processed = 0
-                            val itemsByPath = targets.associateBy { it.path }
-                            try {
-                                MusicConverter.convertBatch(
-                                    inputPaths = targets.map { it.path },
-                                    outputDir = output,
-                                    outputFormat = outputFormat,
-                                    bitrateKbps = bitrateKbps,
-                                    forceOverwrite = forceOverwrite,
-                                    onStarted = { path ->
-                                        itemsByPath[path]?.status = FileStatus.CONVERTING
-                                    },
-                                    onFinished = { outcome ->
-                                        val item = itemsByPath[outcome.inputPath]
-                                        if (item != null) {
-                                            item.status = when {
-                                                outcome.skipped -> FileStatus.SKIPPED
-                                                outcome.succeeded -> FileStatus.DONE
-                                                else -> FileStatus.FAILED
-                                            }
-                                            item.message = outcome.error
-                                        }
-                                        when {
-                                            outcome.skipped -> skippedCount++
-                                            outcome.succeeded -> doneCount++
-                                            else -> failCount++
-                                        }
-                                        processed++
-                                        progress = processed.toFloat() / total
-                                    },
-                                )
-                            } finally {
-                                converting = false
-                            }
+                        val ids = conversionManager.enqueueBatch(
+                            inputPaths = chosen.map { it.path },
+                            outputDir = settings.outputDir,
+                            outputFormat = settings.outputFormat,
+                            bitrateKbps = settings.bitrateKbps,
+                            outputTemplate = settings.localOutputTemplate,
+                            existingFilePolicy = settings.localExistingFilePolicy,
+                            forceOverwrite = !settings.skipExisting,
+                            deduplicate = settings.dedup,
+                        )
+                        chosen.zip(ids).forEach { (item, id) ->
+                            item.taskId = id
+                            item.status = FileStatus.PENDING
+                            item.message = "已加入任务中心"
                         }
                     },
                 )
@@ -545,7 +656,8 @@ fun MainScreen(
                 }
             } else if (page == 5) {
                 DownloadTaskPage(
-                    manager = downloadManager,
+                    downloadManager = downloadManager,
+                    conversionManager = conversionManager,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
             } else if (page == 6) {
@@ -554,14 +666,24 @@ fun MainScreen(
                     onUpdateSettings = onUpdateSettings,
                     maintenance = libraryMaintenance,
                     subscriptionManager = subscriptionManager,
+                    library = library,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
-            } else {
+            } else if (page == 7) {
                 DiscoverPage(
                     settings = settings,
                     downloadManager = downloadManager,
                     crossPlatformMatcher = crossPlatformMatcher,
                     library = library,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            } else {
+                SettingsPage(
+                    settings = settings,
+                    onUpdateSettings = onUpdateSettings,
+                    library = library,
+                    conversionManager = conversionManager,
+                    downloadManager = downloadManager,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
             }
@@ -583,8 +705,10 @@ private fun WorkspaceHeader(
         2 -> "QQ 音乐下载" to "登录后选择歌单，下载歌曲"
         3 -> "酷狗下载" to "登录后选择收藏与创建的歌单，下载歌曲"
         4 -> "酷我下载" to "登录后选择收藏与创建的歌单，下载歌曲"
-        5 -> "下载任务" to "查看进度、速度与剩余时间，随时暂停、继续和重试"
+        5 -> "任务中心" to "统一查看本地转换与在线下载，随时暂停、继续和重试"
         6 -> "曲库整理" to "扫描重复与缺失元数据，批量整理并周期同步歌单"
+        7 -> "搜索与链接" to "搜索四个平台，粘贴歌曲、专辑、歌手或歌单链接后直接加入下载队列"
+        8 -> "设置" to "输出、下载、网络、后台、备份与更新"
         else -> "搜索与链接" to "搜索四个平台，粘贴歌曲、专辑、歌手或歌单链接后直接加入下载队列"
     }
 
@@ -635,6 +759,8 @@ private fun AppSidebar(
     totalCount: Int,
     totalSize: String,
     convertingCount: Int,
+    activeConversions: Int,
+    queuedConversions: Int,
     activeDownloads: Int,
     queuedDownloads: Int,
     subscriptionCount: Int,
@@ -685,28 +811,28 @@ private fun AppSidebar(
         SidebarSectionLabel("音乐服务")
         Spacer(Modifier.height(8.dp))
         SidebarNavItem(
-            icon = Icons.Outlined.LibraryMusic,
+            icon = Icons.Outlined.CloudDownload,
             title = "网易云下载",
             detail = "扫码或浏览器",
             selected = page == 1,
             onClick = { onSelect(1) },
         )
         SidebarNavItem(
-            icon = Icons.Outlined.MusicNote,
+            icon = Icons.AutoMirrored.Outlined.QueueMusic,
             title = "QQ 音乐下载",
             detail = "扫码或 Cookie",
             selected = page == 2,
             onClick = { onSelect(2) },
         )
         SidebarNavItem(
-            icon = Icons.Outlined.LibraryMusic,
+            icon = Icons.Outlined.Headphones,
             title = "酷狗下载",
             detail = "扫码或浏览器",
             selected = page == 3,
             onClick = { onSelect(3) },
         )
         SidebarNavItem(
-            icon = Icons.Outlined.MusicNote,
+            icon = Icons.Outlined.Album,
             title = "酷我下载",
             detail = "浏览器或 Cookie",
             selected = page == 4,
@@ -718,14 +844,18 @@ private fun AppSidebar(
         Spacer(Modifier.height(8.dp))
         SidebarNavItem(
             icon = Icons.Outlined.Download,
-            title = "下载任务",
-            detail = if (activeDownloads > 0 || queuedDownloads > 0) "$activeDownloads 进行中 · $queuedDownloads 等待" else "暂停、重试与历史",
+            title = "任务中心",
+            detail = if (activeConversions + activeDownloads > 0 || queuedConversions + queuedDownloads > 0) {
+                "${activeConversions + activeDownloads} 进行中 · ${queuedConversions + queuedDownloads} 等待"
+            } else {
+                "转换、下载、暂停与历史"
+            },
             selected = page == 5,
             onClick = { onSelect(5) },
         )
 
         SidebarNavItem(
-            icon = Icons.Outlined.LibraryMusic,
+            icon = Icons.Outlined.Tune,
             title = "曲库整理",
             detail = if (subscriptionCount > 0) "$subscriptionCount 个歌单追更中" else "扫描、标签与追更",
             selected = page == 6,
@@ -738,6 +868,13 @@ private fun AppSidebar(
             detail = "四平台统一搜索",
             selected = page == 7,
             onClick = { onSelect(7) },
+        )
+        SidebarNavItem(
+            icon = Icons.Outlined.Settings,
+            title = "设置",
+            detail = "输出、网络、备份与更新",
+            selected = page == 8,
+            onClick = { onSelect(8) },
         )
 
         Spacer(Modifier.weight(1f))
@@ -798,6 +935,7 @@ private fun SidebarNavItem(
     val t = cleanTokens()
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
     val background = when {
         selected -> t.primarySoft
         hovered -> t.surfaceSoft
@@ -811,7 +949,13 @@ private fun SidebarNavItem(
             .height(54.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(background)
+            .border(
+                1.dp,
+                if (focused) t.primary.copy(alpha = 0.72f) else Color.Transparent,
+                RoundedCornerShape(12.dp),
+            )
             .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -871,13 +1015,20 @@ private fun SidebarQueueSummary(
     val t = cleanTokens()
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
     Column(
         modifier = Modifier
             .padding(horizontal = 12.dp, vertical = 10.dp)
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(if (hovered) t.surfaceSoft else Color.Transparent)
+            .border(
+                1.dp,
+                if (focused) t.primary.copy(alpha = 0.72f) else Color.Transparent,
+                RoundedCornerShape(12.dp),
+            )
             .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 9.dp),
     ) {
@@ -918,11 +1069,18 @@ private fun SidebarUtilityButton(
     val t = cleanTokens()
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(9.dp))
             .background(if (hovered) t.surfaceSoft else Color.Transparent)
+            .border(
+                1.dp,
+                if (focused) t.primary.copy(alpha = 0.72f) else Color.Transparent,
+                RoundedCornerShape(9.dp),
+            )
             .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .padding(horizontal = 9.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -945,7 +1103,14 @@ private fun SidebarUtilityButton(
 
 /** 启动检查到新版本时的提示条：给出下载入口，可忽略，不阻塞任何操作。 */
 @Composable
-private fun UpdateBanner(release: ReleaseInfo, current: String, onDismiss: () -> Unit) {
+private fun UpdateBanner(
+    release: ReleaseInfo,
+    current: String,
+    status: String?,
+    busy: Boolean,
+    onDownload: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     val t = cleanTokens()
     Row(
         modifier = Modifier
@@ -972,30 +1137,17 @@ private fun UpdateBanner(release: ReleaseInfo, current: String, onDismiss: () ->
                 color = t.text,
             )
             Text(
-                "当前版本 $current",
+                status ?: "当前版本 $current",
                 fontSize = 12.sp,
                 lineHeight = 16.sp,
                 color = t.textSecondary,
             )
         }
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(9.dp))
-                .background(t.primary)
-                .clickable { openInBrowser(release.pageUrl) }
-                .padding(horizontal = 13.dp, vertical = 7.dp),
-        ) {
-            Text("前往下载", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = t.onPrimary)
-        }
-        Spacer(Modifier.width(6.dp))
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(9.dp))
-                .clickable(onClick = onDismiss)
-                .padding(horizontal = 11.dp, vertical = 7.dp),
-        ) {
-            Text("忽略", fontSize = 12.5.sp, color = t.textSecondary)
-        }
+        AppTextAction(if (busy) "下载中…" else "下载更新", enabled = !busy, onClick = onDownload, filled = true)
+        Spacer(Modifier.width(4.dp))
+        AppTextAction("发行页", onClick = { openInBrowser(release.pageUrl) })
+        Spacer(Modifier.width(4.dp))
+        AppTextAction("忽略", onClick = onDismiss)
     }
 }
 
@@ -1064,7 +1216,7 @@ private fun AboutOverlay(onClose: () -> Unit) {
                 horizontalArrangement = Arrangement.Center,
             ) {
                 Icon(
-                    Icons.Outlined.OpenInNew,
+                    Icons.AutoMirrored.Outlined.OpenInNew,
                     contentDescription = null,
                     tint = t.onPrimary,
                     modifier = Modifier.size(16.dp),
@@ -1078,14 +1230,7 @@ private fun AboutOverlay(onClose: () -> Unit) {
                 )
             }
             Spacer(Modifier.height(6.dp))
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(9.dp))
-                    .clickable(onClick = onClose)
-                    .padding(horizontal = 14.dp, vertical = 7.dp),
-            ) {
-                Text("关闭", fontSize = 12.5.sp, color = t.textSecondary)
-            }
+            AppTextAction("关闭", onClick = onClose, outlined = true)
         }
     }
 }
@@ -1133,14 +1278,11 @@ private fun ResetSettingsOverlay(onClose: () -> Unit, onConfirm: () -> Unit) {
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable(onClick = onClose)
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                ) {
-                    Text("取消", fontSize = 13.sp, color = t.textSecondary)
-                }
+                AppTextAction(
+                    text = "取消",
+                    onClick = onClose,
+                    modifier = Modifier.height(UiMetrics.ControlHeight),
+                )
                 Spacer(Modifier.width(8.dp))
                 Button(
                     onClick = onConfirm,
@@ -1303,13 +1445,14 @@ private fun ColumnScope.QueueCard(
 ) {
     val t = cleanTokens()
     val selectedCount = files.count { it.selected }
+    val listState = rememberLazyListState()
     Box(
         modifier = Modifier
             .weight(1f)
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(UiMetrics.CardRadius))
             .background(t.surface)
-            .border(1.dp, t.cardBorder, RoundedCornerShape(14.dp)),
+            .border(1.dp, t.cardBorder, RoundedCornerShape(UiMetrics.CardRadius)),
     ) {
         Column(Modifier.fillMaxSize()) {
             Row(
@@ -1329,39 +1472,23 @@ private fun ColumnScope.QueueCard(
                     color = t.textMuted,
                 )
                 Spacer(Modifier.weight(1f))
-                Text(
-                    "全选",
-                    modifier = Modifier
-                        .clickable(enabled = files.isNotEmpty() && selectedCount < files.size, onClick = onSelectAll)
-                        .padding(6.dp),
-                    fontSize = 12.5.sp,
-                    color = if (files.isNotEmpty() && selectedCount < files.size) t.primary else t.textMuted,
+                AppTextAction(
+                    text = "全选",
+                    onClick = onSelectAll,
+                    enabled = files.isNotEmpty() && selectedCount < files.size,
+                    primary = true,
                 )
-                Text(
-                    "清空",
-                    modifier = Modifier
-                        .clickable(enabled = selectedCount > 0, onClick = onClearSelection)
-                        .padding(6.dp),
-                    fontSize = 12.5.sp,
-                    color = if (selectedCount > 0) t.textSecondary else t.textMuted,
+                AppTextAction(
+                    text = "清空",
+                    onClick = onClearSelection,
+                    enabled = selectedCount > 0,
                 )
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(t.primarySoft)
-                        .clickable(onClick = onOpenImport)
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Outlined.PlaylistAdd,
-                        contentDescription = null,
-                        tint = t.primary,
-                        modifier = Modifier.size(15.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("歌单导入", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = t.primary)
-                }
+                AppTextAction(
+                    text = "歌单导入",
+                    onClick = onOpenImport,
+                    primary = true,
+                    leadingIcon = Icons.AutoMirrored.Outlined.PlaylistAdd,
+                )
             }
             Box(Modifier.fillMaxWidth().height(1.dp).background(t.rowDivider))
             if (files.isEmpty()) {
@@ -1384,23 +1511,30 @@ private fun ColumnScope.QueueCard(
                     }
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(vertical = 6.dp),
-                ) {
-                    itemsIndexed(files) { index, item ->
-                        Column {
-                            FileRow(
-                                item = item,
-                                converting = converting,
-                                onToggleSelected = { onToggleSelected(index) },
-                                onRemove = { onRemove(index) },
-                            )
-                            if (index < files.lastIndex) {
-                                Box(Modifier.fillMaxWidth().height(1.dp).background(t.rowDivider))
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(vertical = 6.dp),
+                    ) {
+                        itemsIndexed(files) { index, item ->
+                            Column {
+                                FileRow(
+                                    item = item,
+                                    converting = converting,
+                                    onToggleSelected = { onToggleSelected(index) },
+                                    onRemove = { onRemove(index) },
+                                )
+                                if (index < files.lastIndex) {
+                                    Box(Modifier.fillMaxWidth().height(UiMetrics.Hairline).background(t.rowDivider))
+                                }
                             }
                         }
                     }
+                    AppVerticalScrollbar(
+                        state = listState,
+                        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 3.dp),
+                    )
                 }
             }
         }
@@ -1419,11 +1553,21 @@ private fun FileRow(
     onRemove: () -> Unit,
 ) {
     val t = cleanTokens()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
     val ext = item.name.substringAfterLast('.', "").lowercase(Locale.ROOT)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = !converting, onClick = onToggleSelected)
+            .background(if (!converting && hovered) t.surfaceSoft.copy(alpha = 0.62f) else Color.Transparent)
+            .hoverable(interaction, enabled = !converting)
+            .pointerHoverIcon(if (converting) PointerIcon.Default else PointerIcon.Hand)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = !converting,
+                onClick = onToggleSelected,
+            )
             .padding(horizontal = 18.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1464,20 +1608,13 @@ private fun FileRow(
         Spacer(Modifier.width(4.dp))
         StatusChip(item.status)
         Spacer(Modifier.width(2.dp))
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .clickable(enabled = !converting, onClick = onRemove),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Outlined.Close,
-                contentDescription = "移除",
-                tint = if (converting) t.textMuted.copy(alpha = 0.4f) else t.textMuted,
-                modifier = Modifier.size(17.dp),
-            )
-        }
+        AppIconButton(
+            icon = Icons.Outlined.Close,
+            contentDescription = "移除",
+            onClick = onRemove,
+            enabled = !converting,
+            danger = true,
+        )
     }
 }
 
@@ -1522,6 +1659,8 @@ private fun StatusChip(status: FileStatus) {
         FileStatus.SKIPPED -> Triple("已跳过", t.waitBg, t.waitFg)
         FileStatus.FAILED -> Triple("失败", t.errorSoft, t.error)
         FileStatus.DUPLICATE -> Triple("重复", t.dupBg, t.dupFg)
+        FileStatus.PAUSED -> Triple("已暂停", t.waitBg, t.waitFg)
+        FileStatus.CANCELLED -> Triple("已取消", t.waitBg, t.waitFg)
     }
     Box(
         modifier = Modifier
@@ -1551,12 +1690,14 @@ private fun Rail(
     onOutputDirChange: (String) -> Unit,
     dedup: Boolean,
     onDedupChange: (Boolean) -> Unit,
-    skipExisting: Boolean,
-    onSkipExistingChange: (Boolean) -> Unit,
     outputFormat: OutputFormat,
     onOutputFormatChange: (OutputFormat) -> Unit,
     bitrateKbps: Int,
     onBitrateChange: (Int) -> Unit,
+    outputTemplate: String,
+    onOutputTemplateChange: (String) -> Unit,
+    existingFilePolicy: DownloadExistingPolicy,
+    onExistingFilePolicyChange: (DownloadExistingPolicy) -> Unit,
     converting: Boolean,
     progress: Float,
     doneCount: Int,
@@ -1565,8 +1706,10 @@ private fun Rail(
     totalCount: Int,
 ) {
     val t = cleanTokens()
+    val scrollState = rememberScrollState()
+    Box(modifier = Modifier.width(300.dp).fillMaxHeight()) {
     Column(
-        modifier = Modifier.width(300.dp),
+        modifier = Modifier.fillMaxSize().padding(end = 8.dp).verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         RailLabel("输出目录")
@@ -1598,44 +1741,41 @@ private fun Rail(
             )
         }
         Spacer(Modifier.height(10.dp))
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(11.dp),
-        ) {
-            CleanSwitch(
-                checked = skipExisting,
-                enabled = !converting,
-                onChange = onSkipExistingChange,
-            )
-            Column {
-                Text(
-                    if (skipExisting) "跳过已完成" else "强制重新转换",
-                    fontSize = 13.5.sp,
-                    color = t.text,
-                )
-                Text(
-                    if (skipExisting) "已有输出时直接跳过" else "始终覆盖已有输出",
-                    fontSize = 11.5.sp,
-                    color = t.textMuted,
-                )
+        RailLabel("同名文件")
+        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            listOf(
+                DownloadExistingPolicy.SKIP,
+                DownloadExistingPolicy.RENAME,
+                DownloadExistingPolicy.OVERWRITE,
+            ).chunked(3).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { policy ->
+                        ChoiceChip(
+                            text = policy.localDisplayName(),
+                            selected = existingFilePolicy == policy,
+                            enabled = !converting,
+                            onClick = { onExistingFilePolicyChange(policy) },
+                        )
+                    }
+                }
             }
         }
         RailLabel("输出格式")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ChoiceChip(
-                text = "原始格式",
-                selected = outputFormat == OutputFormat.ORIGINAL,
-                enabled = !converting,
-                onClick = { onOutputFormatChange(OutputFormat.ORIGINAL) },
-            )
-            ChoiceChip(
-                text = "MP3",
-                selected = outputFormat == OutputFormat.MP3,
-                enabled = !converting,
-                onClick = { onOutputFormatChange(OutputFormat.MP3) },
-            )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutputFormat.entries.chunked(3).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { format ->
+                        ChoiceChip(
+                            text = format.displayName(),
+                            selected = outputFormat == format,
+                            enabled = !converting,
+                            onClick = { onOutputFormatChange(format) },
+                        )
+                    }
+                }
+            }
         }
-        if (outputFormat == OutputFormat.MP3) {
+        if (outputFormat.usesBitrate) {
             RailLabel("码率")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 outputBitrates.forEach { value ->
@@ -1648,6 +1788,28 @@ private fun Rail(
                 }
             }
         }
+        RailLabel("本地命名模板")
+        OutlinedTextField(
+            value = outputTemplate,
+            onValueChange = onOutputTemplateChange,
+            enabled = !converting,
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.5.sp, color = t.text),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = t.surfaceSoft,
+                unfocusedContainerColor = t.surfaceSoft,
+                focusedIndicatorColor = t.primary,
+                unfocusedIndicatorColor = t.border,
+            ),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth().height(46.dp),
+        )
+        Text(
+            "{title} · {artist} · {album} · {track:02} · {year} · {platform}",
+            fontSize = 10.5.sp,
+            lineHeight = 15.sp,
+            color = t.textMuted,
+        )
         RailLabel("进度")
         if (totalCount > 0) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1677,6 +1839,11 @@ private fun Rail(
             )
         }
     }
+    AppVerticalScrollbar(
+        state = scrollState,
+        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
+    )
+    }
 }
 
 @Composable
@@ -1686,23 +1853,7 @@ private fun ChoiceChip(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    val t = cleanTokens()
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(9.dp))
-            .background(if (selected) t.primarySoft else t.surfaceSoft)
-            .border(1.dp, if (selected) t.primary.copy(alpha = 0.5f) else t.border, RoundedCornerShape(9.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text,
-            fontSize = 12.5.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            color = if (!enabled) t.textMuted else if (selected) t.primary else t.textSecondary,
-        )
-    }
+    AppChoiceChip(text = text, selected = selected, enabled = enabled, onClick = onClick)
 }
 
 @Composable
@@ -1749,21 +1900,7 @@ private fun Field(path: String, actions: List<Pair<String, () -> Unit>>) {
 /** 小灰胶囊动作钮(浏览…/打开), 对应设计稿 .mini2。 */
 @Composable
 private fun ActionPill(label: String, onClick: () -> Unit) {
-    val t = cleanTokens()
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(t.surfaceSoft)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-    ) {
-        Text(
-            label,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            color = t.textSecondary,
-        )
-    }
+    AppTextAction(text = label, onClick = onClick)
 }
 
 // ============================================================
@@ -1824,43 +1961,35 @@ private fun Footer(
 @Composable
 private fun SoftButton(onClick: () -> Unit, text: String, icon: ImageVector) {
     val t = cleanTokens()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(t.surface)
-            .border(1.dp, t.border, RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 9.dp),
+            .height(UiMetrics.ControlHeight)
+            .clip(RoundedCornerShape(UiMetrics.ControlRadius))
+            .background(if (hovered) t.surfaceSoft else t.surface)
+            .border(
+                1.dp,
+                if (focused) t.primary else if (hovered) t.dropBorder else t.border,
+                RoundedCornerShape(UiMetrics.ControlRadius),
+            )
+            .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 15.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        Icon(icon, contentDescription = null, tint = t.textSecondary, modifier = Modifier.size(15.dp))
+        Icon(icon, contentDescription = null, tint = if (hovered) t.text else t.textSecondary, modifier = Modifier.size(15.dp))
         Text(text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = t.text)
     }
 }
 
-/** 设计稿同款小开关: 40x22 胶囊, 白色圆钮。 */
+/** 设计稿同款小开关：统一使用应用级切换控件。 */
 @Composable
 private fun CleanSwitch(checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    val t = cleanTokens()
-    Box(
-        modifier = Modifier
-            .size(width = 40.dp, height = 22.dp)
-            .clip(RoundedCornerShape(11.dp))
-            .background(if (checked) t.primary else t.surfaceSoft)
-            .border(1.dp, if (checked) Color.Transparent else t.border, RoundedCornerShape(11.dp))
-            .clickable(enabled = enabled, onClick = { onChange(!checked) })
-            .padding(2.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .size(18.dp)
-                .align(if (checked) Alignment.CenterEnd else Alignment.CenterStart)
-                .shadow(if (checked) 1.dp else 0.dp, CircleShape)
-                .clip(CircleShape)
-                .background(Color.White),
-        )
-    }
+    AppToggle(checked = checked, enabled = enabled, onCheckedChange = onChange)
 }
 
 /** 渐变进度条(设计稿同款 90deg 橙渐变)。 */
@@ -1918,6 +2047,7 @@ private fun QueueCheckbox(checked: Boolean, enabled: Boolean, onToggle: () -> Un
             .clip(RoundedCornerShape(5.dp))
             .background(if (checked) t.primary else t.surface)
             .border(1.dp, if (checked) Color.Transparent else t.border, RoundedCornerShape(5.dp))
+            .pointerHoverIcon(if (enabled) PointerIcon.Hand else PointerIcon.Default)
             .clickable(enabled = enabled, onClick = onToggle),
         contentAlignment = Alignment.Center,
     ) {
@@ -1948,6 +2078,7 @@ private fun PlaylistImportOverlay(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var outcome by remember { mutableStateOf<MatchOutcome?>(null) }
+    val resultListState = rememberLazyListState()
     val fieldColors = TextFieldDefaults.colors(
         focusedContainerColor = t.surfaceSoft,
         unfocusedContainerColor = t.surfaceSoft,
@@ -1990,11 +2121,11 @@ private fun PlaylistImportOverlay(
                 Spacer(Modifier.width(9.dp))
                 Text("歌单导入", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = t.text)
                 Spacer(Modifier.weight(1f))
-                Icon(
-                    Icons.Outlined.Close,
+                AppIconButton(
+                    icon = Icons.Outlined.Close,
                     contentDescription = "关闭",
-                    tint = t.textMuted,
-                    modifier = Modifier.size(18.dp).clickable(onClick = onClose),
+                    onClick = onClose,
+                    size = UiMetrics.CompactIconButtonSize,
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -2084,7 +2215,8 @@ private fun PlaylistImportOverlay(
                     color = t.text,
                 )
                 Spacer(Modifier.height(6.dp))
-                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(state = resultListState, modifier = Modifier.fillMaxSize()) {
                     if (result.matched.isNotEmpty()) {
                         item { ImportSectionLabel("已命中 (${result.matched.size})", t.textSecondary) }
                         items(result.matched) { match ->
@@ -2102,6 +2234,11 @@ private fun PlaylistImportOverlay(
                         }
                     }
                 }
+                AppVerticalScrollbar(
+                    state = resultListState,
+                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 3.dp),
+                )
+                }
             }
 
             Spacer(Modifier.height(14.dp))
@@ -2112,14 +2249,11 @@ private fun PlaylistImportOverlay(
                     color = t.textMuted,
                 )
                 Spacer(Modifier.weight(1f))
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(11.dp))
-                        .clickable(onClick = onClose)
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                ) {
-                    Text("取消", fontSize = 13.sp, color = t.textSecondary)
-                }
+                AppTextAction(
+                    text = "取消",
+                    onClick = onClose,
+                    modifier = Modifier.height(UiMetrics.ControlHeight),
+                )
                 Spacer(Modifier.width(8.dp))
                 Button(
                     onClick = {
@@ -2253,27 +2387,6 @@ private fun addPaths(files: SnapshotStateList<FileItem>, paths: List<String>) {
             }
         }
     }
-}
-
-private fun dedupFiles(files: List<FileItem>): List<FileItem> {
-    val ordered = files.sortedBy { if (it.name.matches(Regex(".*\\(\\d+\\).*\\.[a-zA-Z0-9]+$"))) 1 else 0 }
-    val seen = HashSet<String>()
-    val unique = mutableListOf<FileItem>()
-    for (item in ordered) {
-        val hash = try {
-            MusicConverter.audioSha256(item.path)
-        } catch (e: Exception) {
-            item.status = FileStatus.FAILED
-            item.message = "计算音频哈希失败: ${e.message}"
-            continue
-        } ?: continue
-        if (seen.add(hash)) {
-            unique.add(item)
-        } else {
-            item.status = FileStatus.DUPLICATE
-        }
-    }
-    return unique
 }
 
 /** 从 Compose 拖拽事件中提取文件路径列表(读取底层 AWT 事件)。 */

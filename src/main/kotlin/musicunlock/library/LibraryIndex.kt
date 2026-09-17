@@ -21,12 +21,20 @@ data class LibraryEntry(
     val hasCover: Boolean = false,
     val hasLyrics: Boolean = false,
     val contentHash: String? = null,
+    val format: String? = null,
+    val bitRateKbps: Int? = null,
 )
 
 class LibraryScanReport(
     val indexed: Int,
     val removed: Int,
     val invalid: List<String>,
+)
+
+class LibraryImportReport(
+    val imported: Int,
+    val skippedMissing: Int,
+    val skippedInvalid: Int,
 )
 
 /** 轻量本地曲库索引，用于增量同步、重复检测和下载状态展示。 */
@@ -96,6 +104,60 @@ class LibraryIndex(
         return LibraryScanReport(found.size, removed, invalid)
     }
 
+    fun exportJson(): String = synchronized(lock) { gson.toJson(entries.values.toList()) }
+
+    fun importFrom(
+        source: File,
+        merge: Boolean = true,
+        onlyExisting: Boolean = true,
+    ): LibraryImportReport {
+        if (!source.isFile) throw IllegalArgumentException("曲库索引不存在：${source.absolutePath}")
+        return importJson(source.readText(), merge = merge, onlyExisting = onlyExisting)
+    }
+
+    fun importJson(
+        json: String,
+        merge: Boolean = true,
+        onlyExisting: Boolean = true,
+    ): LibraryImportReport {
+        val type = com.google.gson.reflect.TypeToken.getParameterized(List::class.java, LibraryEntry::class.java).type
+        val parsed = gson.fromJson<List<LibraryEntry>>(json, type).orEmpty()
+        val valid = parsed.filter { it.path.isNotBlank() }
+        val existing = valid.filter { !onlyExisting || File(it.path).isFile }
+        val imported = existing.associateBy { File(it.path).absolutePath }
+        synchronized(lock) {
+            entries = if (merge) entries + imported else imported
+            persist()
+        }
+        return LibraryImportReport(
+            imported = imported.size,
+            skippedMissing = valid.size - existing.size,
+            skippedInvalid = parsed.size - valid.size,
+        )
+    }
+
+    /** 把曲库记录从旧根目录迁移到新根目录；dryRun 只返回可迁移数量。 */
+    fun relink(oldRoot: String, newRoot: String, dryRun: Boolean = false): Int {
+        val oldPath = File(oldRoot).absoluteFile.toPath().normalize()
+        val newPath = File(newRoot).absoluteFile.toPath().normalize()
+        var changed = 0
+        val next = entries.mapValues { (_, entry) ->
+            val current = File(entry.path).absoluteFile.toPath().normalize()
+            if (!current.startsWith(oldPath)) return@mapValues entry
+            val relative = oldPath.relativize(current)
+            val relocated = newPath.resolve(relative).normalize().toString()
+            changed++
+            entry.copy(path = relocated)
+        }
+        if (!dryRun && changed > 0) {
+            synchronized(lock) {
+                entries = next
+                persist()
+            }
+        }
+        return changed
+    }
+
     fun removeMissing(): Int {
         val missing = entries.values.filterNot { File(it.path).isFile }.map { it.path }
         synchronized(lock) {
@@ -136,6 +198,11 @@ class LibraryIndex(
             hasLyrics = runCatching { !tag?.getFirst(FieldKey.LYRICS).isNullOrBlank() }.getOrDefault(false) ||
                 File(file.parentFile, "${file.nameWithoutExtension}.lrc").isFile,
             contentHash = if (hash) sha256(file) else null,
+            format = runCatching { audio.audioHeader.format }.getOrNull()?.takeIf(String::isNotBlank),
+            bitRateKbps = runCatching { audio.audioHeader.bitRate }.getOrNull()
+                ?.filter(Char::isDigit)
+                ?.toIntOrNull()
+                ?.takeIf { it > 0 },
         )
     }.getOrNull()
 

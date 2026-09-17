@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ macos-latest, windows-latest ]
+        os: [ macos-latest, windows-latest, ubuntu-latest ]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -32,6 +32,12 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot rpm
 
       - name: Run tests
         run: ./gradlew test
@@ -62,6 +68,10 @@ jobs:
           ls -la "MusicUnlock-$VERSION-windows.exe"
           file "MusicUnlock-$VERSION-windows.exe" || true
 
+      - name: Package (Linux deb and rpm)
+        if: runner.os == 'Linux'
+        run: ./gradlew packageDeb packageRpm
+
       - name: Upload macOS dmg
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -77,6 +87,16 @@ jobs:
           name: MusicUnlock-windows
           if-no-files-found: error
           path: MusicUnlock-*-windows.exe
+
+      - name: Upload Linux packages
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicUnlock-linux
+          if-no-files-found: error
+          path: |
+            build/compose/binaries/main/deb/*.deb
+            build/compose/binaries/main/rpm/*.rpm
 
   # 打 v* 标签时自动发布：把构建产物直接上传为 GitHub Release（无需本地中转）
   release:
@@ -98,11 +118,15 @@ jobs:
           mkdir -p assets
           cp dist/MusicUnlock-macos/*.dmg assets/
           cp dist/MusicUnlock-windows/*.exe assets/
+          cp dist/MusicUnlock-linux/* assets/
           VERSION="$GITHUB_REF_NAME"
+          (cd assets && find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' | sort -z | xargs -0 sha256sum) > assets/SHA256SUMS.txt
           gh release create -R "$GITHUB_REPOSITORY" "$VERSION" assets/* \
             --title "MusicUnlock $VERSION" \
             --notes "**MusicUnlock $VERSION**
 
             - **Windows**：单文件 \`MusicUnlock-$VERSION-windows.exe\`，内嵌 JRE，无外部资源文件，双击直接运行（首次启动自动解压到临时目录，退出后自动清理）
             - **macOS**：\`MusicUnlock-$VERSION.dmg\` 磁盘映像，拖入「应用程序」即可
+            - **Linux**：\`deb\` 与 \`rpm\` 安装包
+            - **校验**：\`SHA256SUMS.txt\`
             - 产物未签名，首次运行如遇系统安全提示，请选择「仍要运行 / 打开」"

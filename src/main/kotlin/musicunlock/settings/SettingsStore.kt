@@ -117,6 +117,12 @@ class SettingsRepository internal constructor(
         return source.copy(
             outputDir = source.outputDir.takeIf { it.isNotBlank() } ?: defaultOutputDir(),
             bitrateKbps = source.bitrateKbps.takeIf { it in outputBitrates } ?: 320,
+            localOutputTemplate = source.localOutputTemplate.trim().takeIf { it.isNotEmpty() } ?: "{title}",
+            localExistingFilePolicy = if (!source.skipExisting && source.localExistingFilePolicy == DownloadExistingPolicy.SKIP) {
+                DownloadExistingPolicy.OVERWRITE
+            } else {
+                source.localExistingFilePolicy
+            },
             windowWidth = source.windowWidth.coerceAtLeast(980),
             windowHeight = source.windowHeight.coerceAtLeast(680),
             neteaseCookie = source.neteaseCookie?.trim()?.takeIf { it.isNotEmpty() },
