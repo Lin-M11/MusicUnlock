@@ -36,14 +36,31 @@ object KwmDecoder : MusicDecoder {
         }
         if (data.size < 0x400) throw IllegalArgumentException("kwm file too small")
 
+        val audio = decryptAudio(data)
+        return MusicResult(audio, AudioSniffer.sniff(audio, null))
+    }
+
+    override fun outputExtension(data: ByteArray, fileName: String): String {
+        if (!startsWith(data, MAGIC_HEADER) && !startsWith(data, MAGIC_HEADER_2)) {
+            return if ("aac" == AudioSniffer.sniff(data.take(PROBE_BYTES).toByteArray(), null)) {
+                "aac"
+            } else {
+                throw IllegalArgumentException("not a valid kwm file")
+            }
+        }
+        if (data.size < 0x400) throw IllegalArgumentException("kwm file too small")
+        return AudioSniffer.sniff(decryptAudio(data, PROBE_BYTES), null)
+    }
+
+    private fun decryptAudio(data: ByteArray, maxBytes: Int = Int.MAX_VALUE): ByteArray {
         val fileKey = data.copyOfRange(0x18, 0x20)
         val mask = createMaskFromKey(fileKey)
-        val audio = data.copyOfRange(0x400, data.size)
+        val end = minOf(data.size.toLong(), 0x400L + maxBytes.toLong()).toInt()
+        val audio = data.copyOfRange(0x400, end)
         for (i in audio.indices) {
             audio[i] = (audio[i].toInt() xor mask[i % 0x20].toInt()).toByte()
         }
-
-        return MusicResult(audio, AudioSniffer.sniff(audio, null))
+        return audio
     }
 
     private fun createMaskFromKey(keyBytes: ByteArray): ByteArray {
@@ -84,4 +101,6 @@ object KwmDecoder : MusicDecoder {
         }
         return v
     }
+
+    private const val PROBE_BYTES = 64
 }

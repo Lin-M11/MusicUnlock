@@ -65,6 +65,17 @@ class NcmDecoder : MusicDecoder {
         }
     }
 
+    override fun outputExtension(data: ByteArray, fileName: String): String {
+        NcmReader(data).use { reader ->
+            val header = reader.readBytes(10)
+            if (!header.copyOf(8).contentEquals(MAGIC)) {
+                throw IOException("Not an NCM file: bad magic header")
+            }
+            readKey(reader)
+            return normalizeExt(readMetadata(reader).format)
+        }
+    }
+
     private fun readKey(reader: NcmReader): ByteArray {
         val length = reader.readIntLE()
         val block = reader.readBytes(length)

@@ -92,6 +92,14 @@ object KgmDecoder : MusicDecoder {
     )
 
     override fun decode(data: ByteArray, fileName: String): MusicResult {
+        val audio = decryptAudio(data)
+        return MusicResult(audio, AudioSniffer.sniff(audio, null))
+    }
+
+    override fun outputExtension(data: ByteArray, fileName: String): String =
+        AudioSniffer.sniff(decryptAudio(data, PROBE_BYTES), null)
+
+    private fun decryptAudio(data: ByteArray, maxBytes: Int = Int.MAX_VALUE): ByteArray {
         if (data.size < 0x2C) throw IllegalArgumentException("KGM/VPR: file too small")
         val isVpr = startsWith(data, VPR_HEADER)
         val isKgm = startsWith(data, KGM_HEADER)
@@ -106,7 +114,8 @@ object KgmDecoder : MusicDecoder {
         val key = ByteArray(17)
         System.arraycopy(data, 0x1C, key, 0, 16)
 
-        val audio = data.copyOfRange(headerLen, data.size)
+        val end = minOf(data.size.toLong(), headerLen.toLong() + maxBytes.toLong()).toInt()
+        val audio = data.copyOfRange(headerLen, end)
         for (pos in audio.indices) {
             var med8 = (key[pos % 17].toInt() xor audio[pos].toInt()) and 0xFF
             med8 = med8 xor ((med8 and 0x0F) shl 4)
@@ -118,7 +127,7 @@ object KgmDecoder : MusicDecoder {
             }
         }
 
-        return MusicResult(audio, AudioSniffer.sniff(audio, null))
+        return audio
     }
 
     private fun getMask(pos: Int): Int {
@@ -146,4 +155,6 @@ object KgmDecoder : MusicDecoder {
             ((b[off + 1].toInt() and 0xFF) shl 8) or
             ((b[off + 2].toInt() and 0xFF) shl 16) or
             ((b[off + 3].toInt() and 0xFF) shl 24)
+
+    private const val PROBE_BYTES = 64
 }

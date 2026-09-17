@@ -1,5 +1,6 @@
 package musicunlock
 
+import musicunlock.core.AudioSniffer
 import musicunlock.core.QmcCipher
 import musicunlock.core.QmcDecoder
 import musicunlock.core.QmcKey
@@ -152,8 +153,10 @@ class QmcAlgorithmTest {
             val full = raw + suffix
             val target = load("${name}_target.bin")
 
-            val audio = QmcDecoder(full).decrypt()
+            val decoder = QmcDecoder()
+            val audio = decoder.decode(full, "$name.qmc").data
             assertContentEquals(target, audio, "qmc decoder mismatch: $name")
+            assertEquals(AudioSniffer.sniff(target, null), decoder.outputExtension(full, "$name.qmc"))
         }
     }
 

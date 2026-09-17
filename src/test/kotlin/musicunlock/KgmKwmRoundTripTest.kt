@@ -20,6 +20,7 @@ class KgmKwmRoundTripTest {
         val result = KgmDecoder.decode(file, "test.kgm")
         assertContentEquals(plain, result.data)
         assertEquals("flac", result.ext)
+        assertEquals(result.ext, KgmDecoder.outputExtension(file, "test.kgm"))
     }
 
     @Test
@@ -30,6 +31,7 @@ class KgmKwmRoundTripTest {
         val result = KgmDecoder.decode(file, "test.kgma")
         assertContentEquals(plain, result.data)
         assertEquals("mp3", result.ext)
+        assertEquals(result.ext, KgmDecoder.outputExtension(file, "test.kgma"))
     }
 
     @Test
@@ -40,6 +42,7 @@ class KgmKwmRoundTripTest {
         val result = KgmDecoder.decode(file, "test.vpr")
         assertContentEquals(plain, result.data)
         assertEquals("flac", result.ext)
+        assertEquals(result.ext, KgmDecoder.outputExtension(file, "test.vpr"))
     }
 
     @Test
@@ -75,6 +78,7 @@ class KgmKwmRoundTripTest {
         val result = KwmDecoder.decode(file, "test.kwm")
         assertContentEquals(plain, result.data)
         assertEquals("mp3", result.ext)
+        assertEquals(result.ext, KwmDecoder.outputExtension(file, "test.kwm"))
     }
 
     // ---------- 构造端 ----------

@@ -26,9 +26,12 @@ class NcmDecoderTest {
         val cover = byteArrayOf(0x00, 0x01, 0x02, 0x03)
         val json = """{"musicName":"Test Song","artist":[["Test Artist"]],"album":"Test Album","format":"flac"}"""
 
-        val result: MusicResult = NcmDecoder().decode(buildNcm(audio, json, cover), "test.ncm")
+        val decoder = NcmDecoder()
+        val file = buildNcm(audio, json, cover)
+        val result: MusicResult = decoder.decode(file, "test.ncm")
 
         assertEquals("flac", result.ext)
+        assertEquals(result.ext, decoder.outputExtension(file, "test.ncm"))
         assertEquals("Test Song", result.musicName)
         assertEquals("Test Artist", result.artist)
         assertEquals("Test Album", result.album)
@@ -52,8 +55,11 @@ class NcmDecoderTest {
     @Test
     fun emptyMetadataDefaultsToMp3() {
         val audio = randomAudio(64_000, byteArrayOf(0x49, 0x44, 0x33))
-        val result = NcmDecoder().decode(withEmptyMetadata(audio), "test.ncm")
+        val decoder = NcmDecoder()
+        val file = withEmptyMetadata(audio)
+        val result = decoder.decode(file, "test.ncm")
         assertEquals("mp3", result.ext)
+        assertEquals(result.ext, decoder.outputExtension(file, "test.ncm"))
         assertNull(result.musicName)
         assertContentEquals(audio, result.data)
     }

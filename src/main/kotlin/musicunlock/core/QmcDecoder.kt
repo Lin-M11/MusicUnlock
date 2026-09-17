@@ -72,10 +72,13 @@ class QmcDecoder : MusicDecoder {
         }
     }
 
-    fun decrypt(): ByteArray {
+    fun decrypt(): ByteArray = decrypt(audioSize)
+
+    fun decrypt(maxBytes: Int): ByteArray {
         val cipher = cipher ?: throw IllegalStateException("no cipher found")
         if (audioSize <= 0) throw IllegalStateException("invalid audio size")
-        val audioBuf = file.copyOfRange(0, audioSize)
+        if (maxBytes <= 0) throw IllegalArgumentException("invalid decrypt size")
+        val audioBuf = file.copyOfRange(0, minOf(audioSize, maxBytes))
         cipher.decrypt(audioBuf, 0)
         return audioBuf
     }
@@ -83,6 +86,11 @@ class QmcDecoder : MusicDecoder {
     override fun decode(data: ByteArray, fileName: String): MusicResult {
         val audio = QmcDecoder(data).decrypt()
         return MusicResult(audio, AudioSniffer.sniff(audio, null))
+    }
+
+    override fun outputExtension(data: ByteArray, fileName: String): String {
+        val audioPrefix = QmcDecoder(data).decrypt(PROBE_BYTES)
+        return AudioSniffer.sniff(audioPrefix, null)
     }
 
     private fun ByteArray.indexOf(value: Int): Int {
@@ -105,6 +113,7 @@ class QmcDecoder : MusicDecoder {
             ((b[off + 3].toLong() and 0xFF) shl 24)
 
     companion object {
+        private const val PROBE_BYTES = 64
         private const val BYTE_COMMA = ','.code
     }
 }
