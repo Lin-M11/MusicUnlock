@@ -16,9 +16,39 @@ object BundledFfmpeg {
     fun locate(): String? {
         resolved?.takeIf(::isUsable)?.let { return it.absolutePath }
         return synchronized(this) {
-            resolved?.takeIf(::isUsable)?.absolutePath ?: resolveBundled()?.absolutePath
+            resolved?.takeIf(::isUsable)?.absolutePath
+                ?: resolveBundled()?.takeIf(::canRun)?.absolutePath
+                ?: findSystemFfmpeg()
         }
     }
+
+    private fun findSystemFfmpeg(): String? {
+        val executable = if (isWindows()) "ffmpeg.exe" else "ffmpeg"
+        val path = System.getenv("PATH").orEmpty().split(File.pathSeparator)
+        return path.asSequence()
+            .map { File(it, executable) }
+            .firstOrNull(::canRun)
+            ?.absolutePath
+    }
+
+    private fun canRun(file: File): Boolean = runCatching {
+        if (!isUsable(file)) return false
+        val builder = ProcessBuilder(file.absolutePath, "-version").redirectErrorStream(true)
+        if (!isWindows()) {
+            val key = if (System.getProperty("os.name").lowercase().contains("mac")) "DYLD_LIBRARY_PATH" else "LD_LIBRARY_PATH"
+            val current = builder.environment()[key].orEmpty()
+            val directory = file.parentFile?.absolutePath.orEmpty()
+            builder.environment()[key] = if (current.isBlank()) directory else "$directory:$current"
+        }
+        val process = builder.start()
+        try {
+            process.inputStream.bufferedReader().readText()
+            process.waitFor()
+            process.exitValue() == 0
+        } finally {
+            if (process.isAlive) process.destroyForcibly()
+        }
+    }.getOrDefault(false)
 
     private fun resolveBundled(): File? {
         val platform = platformName() ?: return null

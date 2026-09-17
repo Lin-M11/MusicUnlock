@@ -56,9 +56,16 @@ object AudioTranscoder {
             add(output.absolutePath)
         }
         return try {
-            val process = ProcessBuilder(command)
-                .redirectErrorStream(true)
-                .start()
+            val builder = ProcessBuilder(command).redirectErrorStream(true)
+            if (!System.getProperty("os.name").lowercase().contains("win")) {
+                val libraryPath = File(ffmpeg).parentFile?.absolutePath
+                if (!libraryPath.isNullOrBlank()) {
+                    val key = if (System.getProperty("os.name").lowercase().contains("mac")) "DYLD_LIBRARY_PATH" else "LD_LIBRARY_PATH"
+                    val current = builder.environment()[key].orEmpty()
+                    builder.environment()[key] = if (current.isBlank()) libraryPath else "$libraryPath:$current"
+                }
+            }
+            val process = builder.start()
             val deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(10)
             var finished = false
             while (System.nanoTime() < deadline) {

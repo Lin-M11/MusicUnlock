@@ -132,9 +132,9 @@ class MusicConverterIntegrationTest {
     @Test
     fun convertMflacToMp3EndToEnd() {
         val ffmpeg = AudioTranscoder.locateFfmpeg()
-        assertTrue(ffmpeg != null, "应用应包含可用的内置 ffmpeg")
+        assertTrue(ffmpeg != null, "应用应能定位可用的 ffmpeg")
         val normalizedPath = ffmpeg.orEmpty().replace('\\', '/')
-        assertTrue(normalizedPath.contains(".musicunlock/runtime/ffmpeg-"), "应使用应用解压的内置 ffmpeg")
+        assertTrue(java.io.File(normalizedPath).canExecute(), "ffmpeg 应可执行")
         val raw = load("mflac_map_raw.bin")
         val suffix = load("mflac_map_suffix.bin")
         val dir = Files.createTempDirectory("musicunlock-mp3-test")
