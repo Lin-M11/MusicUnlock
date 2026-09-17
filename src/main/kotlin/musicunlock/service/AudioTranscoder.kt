@@ -31,6 +31,7 @@ object AudioTranscoder {
         format: TranscodeFormat,
         bitrateKbps: Int = 320,
         shouldContinue: () -> Boolean = { true },
+        audioFilters: List<String> = emptyList(),
     ): String? {
         val ffmpeg = locateFfmpeg()
             ?: return "当前应用包缺少适用于本机的 ffmpeg 运行库，无法输出 ${format.name}"
@@ -45,6 +46,7 @@ object AudioTranscoder {
                     "-vn",
                 ),
             )
+            if (audioFilters.isNotEmpty()) addAll(listOf("-af", audioFilters.joinToString(",")))
             when (format) {
                 TranscodeFormat.MP3 -> addAll(listOf("-codec:a", "libmp3lame", "-b:a", "${bitrateKbps}k"))
                 TranscodeFormat.FLAC -> addAll(listOf("-codec:a", "flac", "-compression_level", "8"))

@@ -20,7 +20,10 @@ import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.SkipNext
 import androidx.compose.material.icons.outlined.SkipPrevious
+import androidx.compose.material.icons.automirrored.outlined.QueueMusic
+import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.automirrored.outlined.VolumeDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
@@ -45,6 +48,10 @@ import musicunlock.player.PlayerTrack
 internal fun PlayerBar(
     player: AudioPlayerService,
     onDownload: (PlayerTrack) -> Unit,
+    onToggleLyrics: () -> Unit,
+    lyricsVisible: Boolean,
+    onToggleQueue: () -> Unit,
+    queueVisible: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val snapshot by player.state.collectAsState()
@@ -56,21 +63,21 @@ internal fun PlayerBar(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(72.dp)
+            .height(68.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(t.surface)
             .border(1.dp, t.cardBorder, RoundedCornerShape(14.dp))
-            .padding(horizontal = 14.dp, vertical = 9.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Box(
-            modifier = Modifier.size(42.dp).clip(RoundedCornerShape(10.dp)).background(t.primarySoft),
+            modifier = Modifier.size(38.dp).clip(RoundedCornerShape(10.dp)).background(t.primarySoft),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Outlined.MusicNote, contentDescription = null, tint = t.primary, modifier = Modifier.size(22.dp))
+            Icon(Icons.Outlined.MusicNote, contentDescription = null, tint = t.primary, modifier = Modifier.size(20.dp))
         }
-        Column(Modifier.width(180.dp)) {
+        Column(Modifier.width(150.dp)) {
             Text(current.song.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(current.song.artistText.ifBlank { "未知歌手" }, fontSize = 11.sp, color = t.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -78,32 +85,53 @@ internal fun PlayerBar(
             icon = Icons.Outlined.SkipPrevious,
             contentDescription = "上一首",
             onClick = player::previous,
-            size = UiMetrics.CompactIconButtonSize,
+            size = 28.dp,
         )
         AppIconButton(
             icon = if (snapshot.state == PlayerPlaybackState.PLAYING) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
             contentDescription = if (snapshot.state == PlayerPlaybackState.PLAYING) "暂停" else "播放",
             onClick = player::toggle,
             primary = true,
-            size = UiMetrics.IconButtonSize,
+            size = 32.dp,
         )
         AppIconButton(
             icon = Icons.Outlined.SkipNext,
             contentDescription = "下一首",
             onClick = player::next,
-            size = UiMetrics.CompactIconButtonSize,
+            size = 28.dp,
         )
         AppIconButton(
             icon = Icons.Outlined.Stop,
             contentDescription = "停止",
             onClick = player::stop,
-            size = UiMetrics.CompactIconButtonSize,
+            size = 28.dp,
         )
         AppIconButton(
             icon = Icons.Outlined.Download,
             contentDescription = "下载当前歌曲 MP3",
             onClick = { onDownload(current) },
-            size = UiMetrics.CompactIconButtonSize,
+            size = 28.dp,
+        )
+        AppIconButton(
+            icon = Icons.AutoMirrored.Outlined.QueueMusic,
+            contentDescription = if (queueVisible) "隐藏播放队列" else "显示播放队列",
+            onClick = onToggleQueue,
+            primary = queueVisible,
+            size = 28.dp,
+        )
+        AppIconButton(
+            icon = Icons.Outlined.Bedtime,
+            contentDescription = if (snapshot.sleepRemainingMillis > 0L) "睡眠定时 ${snapshot.sleepRemainingMillis / 60_000L} 分钟" else "设置睡眠定时",
+            onClick = player::cycleSleepTimer,
+            primary = snapshot.sleepRemainingMillis > 0L,
+            size = 28.dp,
+        )
+        AppIconButton(
+            icon = Icons.Outlined.Subtitles,
+            contentDescription = if (lyricsVisible) "隐藏歌词" else "显示歌词",
+            onClick = onToggleLyrics,
+            primary = lyricsVisible,
+            size = 28.dp,
         )
         Text(formatPlayerTime(snapshot.positionMillis), fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, color = t.textMuted)
         Slider(
@@ -122,7 +150,7 @@ internal fun PlayerBar(
         Slider(
             value = snapshot.volume,
             onValueChange = player::setVolume,
-            modifier = Modifier.width(84.dp),
+            modifier = Modifier.width(64.dp),
             colors = SliderDefaults.colors(
                 thumbColor = t.primary,
                 activeTrackColor = t.primary,

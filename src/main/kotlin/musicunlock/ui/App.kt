@@ -165,6 +165,7 @@ import musicunlock.sync.CrossPlatformMatcher
 import musicunlock.sync.SubscriptionManager
 import musicunlock.watch.FolderWatcherService
 import musicunlock.desktop.DesktopIntegration
+import musicunlock.desktop.GlobalMediaKeyService
 import musicunlock.desktop.AutoStartService
 import musicunlock.update.ReleaseInfo
 import musicunlock.update.UpdateChecker
@@ -233,13 +234,32 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
     var importOpen by remember { mutableStateOf(false) }
     val files = remember { mutableStateListOf<FileItem>() }
     val libraryIndex = remember { LibraryIndex() }
-    val audioPlayer = remember { AudioPlayerService() }
+    val audioPlayer = remember {
+        AudioPlayerService(
+            stateFile = musicunlock.player.defaultPlayerStateFile(),
+            onCompleted = { track -> track.localPath?.let { libraryIndex.recordPlay(it, completed = true) } },
+            onSkipped = { track -> track.localPath?.let { libraryIndex.recordPlay(it, completed = false) } },
+            audioPreferences = {
+                val current = SettingsStore.load()
+                musicunlock.player.PlaybackAudioPreferences(
+                    loudnessNormalization = current.playerLoudnessNormalization,
+                    bassBoostDb = current.playerBassBoostDb,
+                    trebleBoostDb = current.playerTrebleBoostDb,
+                    fadeSeconds = current.playerFadeSeconds,
+                )
+            },
+        )
+    }
     val conversionManager = remember { ConversionTaskManager(library = libraryIndex) }
     val downloadManager = remember { DownloadTaskManager(library = libraryIndex, settingsProvider = { SettingsStore.load() }) }
     var sessionRevision by remember { mutableStateOf(0) }
     val updateSettings: SettingsUpdate = { transform -> settings = SettingsStore.update(transform) }
     DisposableEffect(audioPlayer) {
-        onDispose { audioPlayer.close() }
+        GlobalMediaKeyService.start(audioPlayer)
+        onDispose {
+            GlobalMediaKeyService.stop()
+            audioPlayer.close()
+        }
     }
     val libraryMaintenance = remember { LibraryMaintenanceService(libraryIndex) }
     val crossPlatformMatcher = remember { CrossPlatformMatcher(libraryMaintenance) }
@@ -431,6 +451,8 @@ fun MainScreen(
 ) {
     val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf(0) }
+    var lyricsVisible by remember { mutableStateOf(false) }
+    var queueVisible by remember { mutableStateOf(false) }
     var update by remember { mutableStateOf<ReleaseInfo?>(null) }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var updateBusy by remember { mutableStateOf(false) }
@@ -677,6 +699,7 @@ fun MainScreen(
                     onUpdateSettings = onUpdateSettings,
                     maintenance = libraryMaintenance,
                     subscriptionManager = subscriptionManager,
+                    audioPlayer = audioPlayer,
                     library = library,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
@@ -702,6 +725,10 @@ fun MainScreen(
             if (playerState.current != null) {
                 PlayerBar(
                     player = audioPlayer,
+                    onToggleLyrics = { lyricsVisible = !lyricsVisible },
+                    lyricsVisible = lyricsVisible,
+                    onToggleQueue = { queueVisible = !queueVisible },
+                    queueVisible = queueVisible,
                     onDownload = { track ->
                         val provider = musicunlock.online.ProviderRegistry.find(track.platformId)
                         if (provider != null) {
@@ -719,6 +746,12 @@ fun MainScreen(
                         }
                     },
                 )
+                if (queueVisible) {
+                    PlayerQueuePanel(player = audioPlayer, modifier = Modifier.fillMaxWidth())
+                }
+                if (lyricsVisible) {
+                    PlayerLyricsPanel(player = audioPlayer, modifier = Modifier.fillMaxWidth())
+                }
             }
         }
     }
