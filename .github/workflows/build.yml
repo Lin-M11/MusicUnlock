@@ -44,9 +44,50 @@ jobs:
 
       # jpackage 打包必须在目标操作系统上进行(Compose 官方限制)
       # macOS：发布产物为 dmg
+      - name: Build macOS app for signing
+        if: runner.os == 'macOS'
+        run: ./gradlew createDistributable
+
+      - name: Sign macOS app when certificate is configured
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE_BASE64" ]; then
+            echo "未配置 Apple 证书，跳过签名"
+            exit 0
+          fi
+          CERT_PATH="$RUNNER_TEMP/apple-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/apple-signing.keychain-db"
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "temporary-password" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "temporary-password" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "temporary-password" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          /usr/bin/codesign --deep --force --options runtime --timestamp             --sign "$APPLE_SIGNING_IDENTITY"             build/compose/binaries/main/app/MusicUnlock.app
+
       - name: Package (macOS .dmg)
         if: runner.os == 'macOS'
         run: ./gradlew packageDmg
+
+      - name: Notarize and staple macOS dmg
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_APP_PASSWORD" ]; then
+            echo "未配置 Apple 公证凭据，跳过公证"
+            exit 0
+          fi
+          DMG=$(find build/compose/binaries/main/dmg -name '*.dmg' | head -n 1)
+          xcrun notarytool submit "$DMG"             --apple-id "$APPLE_ID"             --team-id "$APPLE_TEAM_ID"             --password "$APPLE_APP_PASSWORD"             --wait
+          xcrun stapler staple "$DMG"
 
       # Windows：发布产物为单文件 exe。
       # createDistributable 生成 exe + 自带 JRE 的应用目录，再用 7-Zip SFX
@@ -67,6 +108,23 @@ jobs:
           cat packaging/windows/7zsd_All_x64.sfx packaging/windows/sfx-config.txt build/MusicUnlock.7z > "MusicUnlock-$VERSION-windows.exe"
           ls -la "MusicUnlock-$VERSION-windows.exe"
           file "MusicUnlock-$VERSION-windows.exe" || true
+
+
+      - name: Sign Windows executable when certificate is configured
+        if: runner.os == 'Windows'
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$WINDOWS_CERTIFICATE_BASE64" ]; then
+            echo "未配置 Windows 证书，跳过签名"
+            exit 0
+          fi
+          CERT_PATH="$RUNNER_TEMP/windows-signing.pfx"
+          echo "$WINDOWS_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          VERSION=$(grep -m1 '^version' build.gradle.kts | sed -E 's/version = "([^"]+)"/\1/')
+          SIGNTOOL=$(find "/c/Program Files (x86)/Windows Kits/10/bin" -name signtool.exe | sort | tail -n 1)
+          "$SIGNTOOL" sign /fd SHA256 /f "$(cygpath -w "$CERT_PATH")" /p "$WINDOWS_CERTIFICATE_PASSWORD" /tr http://timestamp.digicert.com /td SHA256 "MusicUnlock-$VERSION-windows.exe"
 
       - name: Package (Linux deb and rpm)
         if: runner.os == 'Linux'
@@ -130,4 +188,4 @@ jobs:
             - **macOS**：\`MusicUnlock-$VERSION.dmg\` 磁盘映像，拖入「应用程序」即可
             - **Linux**：\`deb\` 与 \`rpm\` 安装包
             - **校验**：\`SHA256SUMS.txt\`
-            - 产物未签名，首次运行如遇系统安全提示，请选择「仍要运行 / 打开」"
+            - **签名**：CI 在配置证书时自动签名；macOS 在配置公证凭据时同时完成公证与装订"
