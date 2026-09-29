@@ -395,12 +395,10 @@ internal fun SettingsPage(
                             onUpdateSettings { current -> current.copy(librarySyncProfiles = current.librarySyncProfiles.filterNot { it.id == profile.id }) }
                         }
                     }
-                    SettingsTextField(
-                        profile.excludePatterns.joinToString(", "),
-                        "排除规则，如 *Live*、*.mp3、某歌手/*",
-                        fill = true,
-                    ) { value ->
-                        val patterns = value.split(',', '，').map(String::trim).filter(String::isNotEmpty)
+                    SyncExcludePatternField(
+                        profileId = profile.id,
+                        patterns = profile.excludePatterns,
+                    ) { patterns ->
                         onUpdateSettings { current ->
                             current.copy(librarySyncProfiles = current.librarySyncProfiles.map {
                                 if (it.id == profile.id) it.copy(excludePatterns = patterns) else it
@@ -601,7 +599,7 @@ private fun AutomationHistoryOverlay(
     onClose: () -> Unit,
 ) {
     val t = cleanTokens()
-    androidx.compose.ui.window.Dialog(onCloseRequest = onClose) {
+    androidx.compose.ui.window.DialogWindow(onCloseRequest = onClose) {
         Column(
             modifier = Modifier
                 .width(620.dp)
@@ -649,7 +647,7 @@ private fun AutomationHistoryOverlay(
 @Composable
 private fun SyncResultOverlay(result: SyncResult, onClose: () -> Unit) {
     val t = cleanTokens()
-    androidx.compose.ui.window.Dialog(onCloseRequest = onClose) {
+    androidx.compose.ui.window.DialogWindow(onCloseRequest = onClose) {
         Column(
             modifier = Modifier
                 .width(560.dp)
@@ -715,6 +713,25 @@ private fun SettingsPathField(path: String, onBrowse: () -> Unit, onOpen: () -> 
         Text(path, modifier = Modifier.weight(1f), fontSize = 12.5.sp, color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
         SettingsAction("浏览", onClick = onBrowse)
         SettingsAction("打开", onClick = onOpen)
+    }
+}
+
+/**
+ * 同步排除规则输入框。
+ *
+ * 逗号分隔的规则在每次按键后都会被解析成列表，因此输入内容必须先留在本地状态里，
+ * 否则用户刚敲下的分隔逗号会被下一次重组归一化掉，导致无法输入第二条规则。
+ */
+@Composable
+private fun SyncExcludePatternField(
+    profileId: String,
+    patterns: List<String>,
+    onPatternsChange: (List<String>) -> Unit,
+) {
+    var text by remember(profileId) { mutableStateOf(patterns.joinToString(", ")) }
+    SettingsTextField(text, "排除规则，如 *Live*、*.mp3、某歌手/*", fill = true) { value ->
+        text = value
+        onPatternsChange(value.split(',', '，').map(String::trim).filter(String::isNotEmpty))
     }
 }
 
