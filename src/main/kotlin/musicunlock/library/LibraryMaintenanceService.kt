@@ -29,6 +29,23 @@ class LibraryAuditReport(
 
 class RenameOutcome(val renamed: Int, val failed: List<String>)
 
+enum class EditableTagField {
+    TITLE,
+    ARTIST,
+    ALBUM,
+    ALBUM_ARTIST,
+    TRACK_NUMBER,
+    DISC_NUMBER,
+    YEAR,
+    GENRE,
+    COMPOSER,
+    ISRC,
+    LYRICS,
+    COVER,
+    RATING,
+    FAVORITE,
+}
+
 data class EditableTags(
     val title: String? = null,
     val artist: String? = null,
@@ -54,7 +71,7 @@ class LibraryMaintenanceService(
         index.scan(directory, hash = hash || analyze, analyze = analyze)
 
     fun audit(directory: File? = null): LibraryAuditReport {
-        val entries = index.all().filter { directory == null || File(it.path).absolutePath.startsWith(directory.absolutePath) }
+        val entries = index.all().filter { directory == null || isInsideDirectory(it.path, directory) }
         val duplicates = index.duplicateGroups()
         val duplicateMap = duplicates.flatten().associate { entry ->
             entry.path to duplicates.first { group -> group.any { it.path == entry.path } }
@@ -143,36 +160,51 @@ class LibraryMaintenanceService(
         return issues.mapNotNull { entries[it.path] }.count { repairTags(it, fetchOnline) }
     }
 
-    fun updateTags(entry: LibraryEntry, tags: EditableTags): Boolean {
+    /** 按 [fields] 指定的字段写回标签；[fields] 为空时不改动任何文件。 */
+    fun updateTags(
+        entry: LibraryEntry,
+        tags: EditableTags,
+        fields: Set<EditableTagField>,
+    ): Boolean {
         val file = File(entry.path)
-        if (!file.isFile) return false
+        if (!file.isFile || fields.isEmpty()) return false
         val ok = TagWriter.embed(
             file,
-            AudioTagData(
-                title = tags.title?.trim()?.takeIf(String::isNotBlank),
-                artist = tags.artist?.trim()?.takeIf(String::isNotBlank),
-                album = tags.album?.trim()?.takeIf(String::isNotBlank),
-                albumArtist = tags.albumArtist?.trim()?.takeIf(String::isNotBlank),
-                trackNumber = tags.trackNumber,
-                discNumber = tags.discNumber,
-                year = tags.year,
-                genre = tags.genre?.trim()?.takeIf(String::isNotBlank),
-                composer = tags.composer?.trim()?.takeIf(String::isNotBlank),
-                isrc = tags.isrc?.trim()?.takeIf(String::isNotBlank),
-                lyrics = tags.lyrics?.trim()?.takeIf(String::isNotBlank),
-                cover = tags.cover,
-                platform = entry.platform,
-                sourceSongId = entry.sourceSongId,
-                rating = tags.rating,
-                favorite = tags.favorite,
-            ),
+            tags.toAudioTagData(entry, fields),
+            clearFields = tags.clearFields(fields),
+            clearCover = EditableTagField.COVER in fields && tags.cover == null,
         )
         if (ok) index.upsert(file, entry.platform, entry.sourceSongId, hash = false)
         return ok
     }
 
-    fun updateTagsBatch(entries: List<LibraryEntry>, tags: EditableTags): Int =
-        entries.count { entry -> updateTags(entry, tags) }
+    /** 批量写回标签；必须显式给出 [fields]，避免误用默认值覆盖全部字段。 */
+    fun updateTagsBatch(
+        entries: List<LibraryEntry>,
+        tags: EditableTags,
+        fields: Set<EditableTagField>,
+    ): Int = entries.count { entry -> updateTags(entry, tags, fields) }
+
+    fun snapshotTags(entry: LibraryEntry): EditableTags? = runCatching {
+        val audio = AudioFileIO.read(File(entry.path))
+        val tag = audio.tag
+        EditableTags(
+            title = runCatching { tag?.getFirst(FieldKey.TITLE) }.getOrNull(),
+            artist = runCatching { tag?.getFirst(FieldKey.ARTIST) }.getOrNull(),
+            album = runCatching { tag?.getFirst(FieldKey.ALBUM) }.getOrNull(),
+            albumArtist = runCatching { tag?.getFirst(FieldKey.ALBUM_ARTIST) }.getOrNull(),
+            trackNumber = runCatching { tag?.getFirst(FieldKey.TRACK) }.getOrNull()?.filter(Char::isDigit)?.toIntOrNull(),
+            discNumber = runCatching { tag?.getFirst(FieldKey.DISC_NO) }.getOrNull()?.filter(Char::isDigit)?.toIntOrNull(),
+            year = runCatching { tag?.getFirst(FieldKey.YEAR) }.getOrNull()?.filter(Char::isDigit)?.take(4)?.toIntOrNull(),
+            genre = runCatching { tag?.getFirst(FieldKey.GENRE) }.getOrNull(),
+            composer = runCatching { tag?.getFirst(FieldKey.COMPOSER) }.getOrNull(),
+            isrc = runCatching { tag?.getFirst(FieldKey.ISRC) }.getOrNull(),
+            lyrics = runCatching { tag?.getFirst(FieldKey.LYRICS) }.getOrNull(),
+            cover = runCatching { tag?.firstArtwork?.binaryData }.getOrNull(),
+            rating = runCatching { tag?.getFirst(FieldKey.RATING) }.getOrNull()?.filter(Char::isDigit)?.toIntOrNull(),
+            favorite = runCatching { tag?.getFirst(FieldKey.CUSTOM2) }.getOrNull()?.let { it == "favorite=1" },
+        )
+    }.getOrNull()
 
     fun updateTags(
         entry: LibraryEntry,
@@ -278,6 +310,41 @@ class LibraryMaintenanceService(
             ?.first
     }
 
+    private fun EditableTags.toAudioTagData(entry: LibraryEntry, fields: Set<EditableTagField>): AudioTagData = AudioTagData(
+        title = title.takeIf { EditableTagField.TITLE in fields }?.trim()?.takeIf(String::isNotBlank),
+        artist = artist.takeIf { EditableTagField.ARTIST in fields }?.trim()?.takeIf(String::isNotBlank),
+        album = album.takeIf { EditableTagField.ALBUM in fields }?.trim()?.takeIf(String::isNotBlank),
+        albumArtist = albumArtist.takeIf { EditableTagField.ALBUM_ARTIST in fields }?.trim()?.takeIf(String::isNotBlank),
+        trackNumber = trackNumber.takeIf { EditableTagField.TRACK_NUMBER in fields },
+        discNumber = discNumber.takeIf { EditableTagField.DISC_NUMBER in fields },
+        year = year.takeIf { EditableTagField.YEAR in fields },
+        genre = genre.takeIf { EditableTagField.GENRE in fields }?.trim()?.takeIf(String::isNotBlank),
+        composer = composer.takeIf { EditableTagField.COMPOSER in fields }?.trim()?.takeIf(String::isNotBlank),
+        isrc = isrc.takeIf { EditableTagField.ISRC in fields }?.trim()?.takeIf(String::isNotBlank),
+        lyrics = lyrics.takeIf { EditableTagField.LYRICS in fields }?.trim()?.takeIf(String::isNotBlank),
+        cover = cover.takeIf { EditableTagField.COVER in fields },
+        platform = entry.platform,
+        sourceSongId = entry.sourceSongId,
+        rating = rating.takeIf { EditableTagField.RATING in fields },
+        favorite = favorite.takeIf { EditableTagField.FAVORITE in fields },
+    )
+
+    private fun EditableTags.clearFields(fields: Set<EditableTagField>): Set<FieldKey> = buildSet {
+        if (EditableTagField.TITLE in fields && title.isNullOrBlank()) add(FieldKey.TITLE)
+        if (EditableTagField.ARTIST in fields && artist.isNullOrBlank()) add(FieldKey.ARTIST)
+        if (EditableTagField.ALBUM in fields && album.isNullOrBlank()) add(FieldKey.ALBUM)
+        if (EditableTagField.ALBUM_ARTIST in fields && albumArtist.isNullOrBlank()) add(FieldKey.ALBUM_ARTIST)
+        if (EditableTagField.TRACK_NUMBER in fields && trackNumber == null) add(FieldKey.TRACK)
+        if (EditableTagField.DISC_NUMBER in fields && discNumber == null) add(FieldKey.DISC_NO)
+        if (EditableTagField.YEAR in fields && year == null) add(FieldKey.YEAR)
+        if (EditableTagField.GENRE in fields && genre.isNullOrBlank()) add(FieldKey.GENRE)
+        if (EditableTagField.COMPOSER in fields && composer.isNullOrBlank()) add(FieldKey.COMPOSER)
+        if (EditableTagField.ISRC in fields && isrc.isNullOrBlank()) add(FieldKey.ISRC)
+        if (EditableTagField.LYRICS in fields && lyrics.isNullOrBlank()) add(FieldKey.LYRICS)
+        if (EditableTagField.RATING in fields && (rating == null || rating <= 0)) add(FieldKey.RATING)
+        if (EditableTagField.FAVORITE in fields && favorite == null) add(FieldKey.CUSTOM2)
+    }
+
     private fun LibraryEntry.toMusicSong(): MusicSong = MusicSong(
         id = sourceSongId ?: File(path).nameWithoutExtension,
         name = title ?: File(path).nameWithoutExtension,
@@ -300,4 +367,14 @@ class LibraryMaintenanceService(
     private fun normalize(value: String): String = buildString {
         value.lowercase().forEach { ch -> if (ch.isLetterOrDigit()) append(ch) }
     }
+}
+
+/**
+ * 判断 [path] 是否位于 [directory] 之下。
+ * 按绝对路径与分隔符边界比较，既兼容 Windows 的反斜杠，也避免 `/music` 误匹配 `/music2`。
+ */
+internal fun isInsideDirectory(path: String, directory: File): Boolean {
+    val root = directory.absoluteFile.path.trimEnd('/', '\\')
+    val target = File(path).absoluteFile.path
+    return target == root || target.startsWith("$root/") || target.startsWith("$root\\")
 }

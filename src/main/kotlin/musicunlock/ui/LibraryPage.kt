@@ -28,9 +28,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -42,8 +50,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +64,8 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import musicunlock.library.EditableTagField
+import musicunlock.library.EditableTags
 import musicunlock.library.LibraryAuditReport
 import musicunlock.library.LibraryCleanupPlan
 import musicunlock.library.LibraryCleanupService
@@ -64,7 +74,10 @@ import musicunlock.library.LibraryExportService
 import musicunlock.library.LibraryIndex
 import musicunlock.library.LibraryMaintenanceService
 import musicunlock.library.LibrarySort
+import musicunlock.library.QualityRecommendation
+import musicunlock.library.QualityRecommendationService
 import musicunlock.library.SmartPlaylistKind
+import musicunlock.library.isInsideDirectory
 import musicunlock.settings.AppSettings
 import musicunlock.player.AudioPlayerService
 import musicunlock.player.PlayerTrack
@@ -98,6 +111,11 @@ internal fun LibraryPage(
     var localPlaylists by remember { mutableStateOf(library.playlists()) }
     var selectedPlaylistId by remember { mutableStateOf<String?>(null) }
     var newPlaylistName by remember { mutableStateOf("") }
+    var playlistPickerEntry by remember { mutableStateOf<LibraryEntry?>(null) }
+    var batchFields by remember { mutableStateOf<Set<EditableTagField>>(emptySet()) }
+    var lastTagUndo by remember { mutableStateOf<TagUndo?>(null) }
+    var duplicateReviewOpen by remember { mutableStateOf(false) }
+    var qualityRecommendations by remember { mutableStateOf<List<QualityRecommendation>>(emptyList()) }
     var status by remember { mutableStateOf("扫描输出目录后可以检查重复、封面和歌词缺失") }
     var template by remember(settings.outputTemplate) { mutableStateOf(settings.outputTemplate) }
     var busy by remember { mutableStateOf(false) }
@@ -127,6 +145,20 @@ internal fun LibraryPage(
             report = withContext(Dispatchers.IO) { maintenance.audit(File(settings.outputDir)) }
             entries = library.search("", 5_000, sort)
             status = "已索引 ${result.indexed} 个音频，清理 ${result.removed} 条失效记录，发现 ${report?.issues?.size ?: 0} 个问题，损坏 ${result.invalid.size} 个"
+            busy = false
+        }
+    }
+
+    fun applyCleanup(plan: LibraryCleanupPlan) {
+        scope.launch {
+            busy = true
+            val outcome = withContext(Dispatchers.IO) { cleanupService.apply(plan, allowLikelyDuplicates) }
+            cleanupId = outcome.id
+            report = withContext(Dispatchers.IO) { maintenance.audit(File(settings.outputDir)) }
+            refreshEntries()
+            status = "已移动 ${outcome.movedTracks} 首到回收站，可撤销"
+            cleanupPlan = null
+            duplicateReviewOpen = false
             busy = false
         }
     }
@@ -189,6 +221,19 @@ internal fun LibraryPage(
                             cleanupPlan = cleanupService.plan(current.duplicateGroups)
                             allowLikelyDuplicates = false
                         }
+                        OutlineAction("质量升级分析", enabled = !busy) {
+                            busy = true
+                            status = "正在生成质量升级建议…"
+                            scope.launch {
+                                val source = (if (entries.isEmpty()) library.all() else entries).take(300)
+                                qualityRecommendations = withContext(Dispatchers.IO) {
+                                    source.mapNotNull { entry -> QualityRecommendationService.recommend(File(entry.path)) }
+                                        .sortedWith(compareBy<QualityRecommendation> { it.score }.thenBy { it.title })
+                                }
+                                status = "已分析 ${source.size} 首，生成 ${qualityRecommendations.size} 条建议"
+                                busy = false
+                            }
+                        }
                     }
                     cleanupPlan?.let { plan ->
                         Spacer(Modifier.height(10.dp))
@@ -214,18 +259,8 @@ internal fun LibraryPage(
                                 ToggleLine("同时处理疑似重复", allowLikelyDuplicates) { allowLikelyDuplicates = it }
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlineAction("移入回收站") {
-                                    scope.launch {
-                                        busy = true
-                                        val outcome = withContext(Dispatchers.IO) { cleanupService.apply(plan, allowLikelyDuplicates) }
-                                        cleanupId = outcome.id
-                                        report = withContext(Dispatchers.IO) { maintenance.audit(File(settings.outputDir)) }
-                                        refreshEntries()
-                                        status = "已移动 ${outcome.movedTracks} 首到回收站，可撤销"
-                                        cleanupPlan = null
-                                        busy = false
-                                    }
-                                }
+                                OutlineAction("详细审阅") { duplicateReviewOpen = true }
+                                OutlineAction("移入回收站") { applyCleanup(plan) }
                                 OutlineAction("取消") { cleanupPlan = null }
                             }
                         }
@@ -247,12 +282,36 @@ internal fun LibraryPage(
                 }
             }
 
+            if (qualityRecommendations.isNotEmpty()) {
+                SectionCard("质量升级建议") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("按质量评分从低到高排列", modifier = Modifier.weight(1f), fontSize = 11.5.sp, color = t.textMuted)
+                        OutlineAction("清除结果") { qualityRecommendations = emptyList() }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    qualityRecommendations.take(12).forEach { recommendation ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier.width(42.dp).clip(RoundedCornerShape(9.dp)).background(if (recommendation.score < 70) t.errorSoft else t.primarySoft).padding(vertical = 7.dp),
+                                contentAlignment = Alignment.Center,
+                            ) { Text("${recommendation.score}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (recommendation.score < 70) t.error else t.primary) }
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(recommendation.title, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(recommendation.reason, fontSize = 10.5.sp, color = t.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            Text(recommendation.action, fontSize = 11.sp, color = t.primary, maxLines = 1)
+                        }
+                    }
+                }
+            }
+
             SectionCard("批量重命名") {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SmallTextField(template, "命名模板", Modifier.weight(1f)) { template = it }
                     OutlineAction("应用模板") {
                         val entries = library.all()
-                            .filter { entry -> entry.path.startsWith(settings.outputDir) }
+                            .filter { entry -> isInsideDirectory(entry.path, File(settings.outputDir)) }
                         scope.launch {
                             busy = true
                             val outcome = withContext(Dispatchers.IO) { maintenance.renameByTemplate(entries, template) }
@@ -311,11 +370,27 @@ internal fun LibraryPage(
                             busy = false
                         }
                     }
-                    OutlineAction("批量编辑") {
+                    OutlineAction("批量编辑", enabled = selectedPaths.isNotEmpty()) {
                         val first = entries.firstOrNull { it.path in selectedPaths }
                         if (first != null) {
                             batchEditing = true
+                            batchFields = emptySet()
                             editingEntry = first
+                        }
+                    }
+                    OutlineAction("撤销标签", enabled = lastTagUndo != null) {
+                        val undo = lastTagUndo ?: return@OutlineAction
+                        scope.launch {
+                            busy = true
+                            val restored = withContext(Dispatchers.IO) {
+                                undo.snapshots.count { (entry, tags) ->
+                                    File(entry.path).isFile && maintenance.updateTags(entry, tags, undo.fields)
+                                }
+                            }
+                            lastTagUndo = null
+                            refreshEntries()
+                            status = "已撤销 $restored 首歌曲的标签修改"
+                            busy = false
                         }
                     }
                     Text("已选 ${selectedPaths.size}", fontSize = 11.sp, color = t.textMuted)
@@ -368,18 +443,20 @@ internal fun LibraryPage(
                                         },
                                         danger = entry.isFavorite,
                                     )
-                                    OutlineAction("修复") {
-                                        scope.launch {
-                                            busy = true
-                                            status = if (withContext(Dispatchers.IO) { maintenance.repairTags(entry) }) "已修复 ${File(entry.path).name}" else "修复失败"
-                                            refreshEntries()
-                                            busy = false
-                                        }
-                                    }
-                                    OutlineAction("编辑") { editingEntry = entry }
-                                    OutlineAction("打开目录") {
-                                        runCatching { java.awt.Desktop.getDesktop().open(File(entry.path).parentFile) }
-                                    }
+                                    LibraryTrackActions(
+                                        entry = entry,
+                                        player = audioPlayer,
+                                        onEdit = { editingEntry = entry },
+                                        onAddToPlaylist = { playlistPickerEntry = entry },
+                                        onRepair = {
+                                            scope.launch {
+                                                busy = true
+                                                status = if (withContext(Dispatchers.IO) { maintenance.repairTags(entry) }) "已修复 ${File(entry.path).name}" else "修复失败"
+                                                refreshEntries()
+                                                busy = false
+                                            }
+                                        },
+                                    )
                                 }
                                 Box(Modifier.fillMaxWidth().height(UiMetrics.Hairline).background(t.rowDivider))
                             }
@@ -520,22 +597,62 @@ internal fun LibraryPage(
             modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
         )
     }
+    if (duplicateReviewOpen && cleanupPlan != null) {
+        DuplicateReviewOverlay(
+            plan = cleanupPlan!!,
+            entriesByPath = library.all().associateBy { it.path },
+            allowLikelyDuplicates = allowLikelyDuplicates,
+            onAllowLikelyChange = { allowLikelyDuplicates = it },
+            onApply = { applyCleanup(cleanupPlan!!) },
+            onClose = { duplicateReviewOpen = false },
+        )
+    }
+
+    playlistPickerEntry?.let { entry ->
+        AddToPlaylistOverlay(
+            entry = entry,
+            playlists = localPlaylists,
+            onClose = { playlistPickerEntry = null },
+            onAdd = { playlistId ->
+                library.addToPlaylist(playlistId, listOf(entry.path))
+                localPlaylists = library.playlists()
+                status = "已加入本地歌单"
+                playlistPickerEntry = null
+            },
+            onCreate = { name ->
+                val playlist = library.createPlaylist(name)
+                library.addToPlaylist(playlist.id, listOf(entry.path))
+                localPlaylists = library.playlists()
+                selectedPlaylistId = playlist.id
+                status = "已新建歌单并加入歌曲"
+                playlistPickerEntry = null
+            },
+        )
+    }
+
     editingEntry?.let { entry ->
         TagEditorOverlay(
             entry = entry,
-            onSave = { tags ->
+            batchMode = batchEditing,
+            selectedFields = batchFields,
+            onSelectionChange = { batchFields = it },
+            onSave = { tags, fields ->
                 scope.launch {
                     busy = true
                     val targets = if (batchEditing) entries.filter { it.path in selectedPaths } else listOf(entry)
-                    val updated = withContext(Dispatchers.IO) {
-                        maintenance.updateTagsBatch(targets, tags)
+                    val snapshots = withContext(Dispatchers.IO) {
+                        targets.mapNotNull { target -> maintenance.snapshotTags(target)?.let { target to it } }
                     }
+                    val updated = withContext(Dispatchers.IO) {
+                        maintenance.updateTagsBatch(targets, tags, fields)
+                    }
+                    if (batchEditing && updated > 0) lastTagUndo = TagUndo(snapshots, fields)
                     status = if (batchEditing) "已更新 $updated / ${targets.size} 个文件" else if (updated > 0) {
                         "标签已保存：${File(entry.path).name}"
                     } else {
                         "标签保存失败"
                     }
-                    entries = library.all().filter { it.path.startsWith(settings.outputDir) }
+                    entries = library.all().filter { isInsideDirectory(it.path, File(settings.outputDir)) }
                     busy = false
                 }
             },
@@ -695,3 +812,137 @@ private fun SmartPlaylistKind.displayName(): String = when (this) {
     SmartPlaylistKind.LOSSLESS -> "无损"
     SmartPlaylistKind.NEEDS_ATTENTION -> "待整理"
 }
+
+@Composable
+private fun LibraryTrackActions(
+    entry: LibraryEntry,
+    player: AudioPlayerService,
+    onEdit: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    onRepair: () -> Unit,
+) {
+    var expanded by remember(entry.path) { mutableStateOf(false) }
+    Box {
+        AppIconButton(Icons.Outlined.MoreVert, "更多操作", { expanded = true })
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("下一首播放") },
+                onClick = { expanded = false; player.playNext(listOf(entry.toPlayerTrack())) },
+                leadingIcon = { androidx.compose.material3.Icon(Icons.Outlined.PlayArrow, null) },
+            )
+            DropdownMenuItem(
+                text = { Text("加入播放队列") },
+                onClick = { expanded = false; player.addToQueue(listOf(entry.toPlayerTrack())) },
+                leadingIcon = { androidx.compose.material3.Icon(Icons.AutoMirrored.Outlined.QueueMusic, null) },
+            )
+            DropdownMenuItem(
+                text = { Text("加入本地歌单") },
+                onClick = { expanded = false; onAddToPlaylist() },
+                leadingIcon = { androidx.compose.material3.Icon(Icons.Outlined.PlaylistAdd, null) },
+            )
+            DropdownMenuItem(
+                text = { Text("编辑完整标签") },
+                onClick = { expanded = false; onEdit() },
+                leadingIcon = { androidx.compose.material3.Icon(Icons.Outlined.Edit, null) },
+            )
+            DropdownMenuItem(
+                text = { Text("修复标签与元数据") },
+                onClick = { expanded = false; onRepair() },
+                leadingIcon = { androidx.compose.material3.Icon(Icons.Outlined.Build, null) },
+            )
+            DropdownMenuItem(
+                text = { Text("打开所在目录") },
+                onClick = {
+                    expanded = false
+                    runCatching { java.awt.Desktop.getDesktop().open(File(entry.path).parentFile) }
+                },
+                leadingIcon = { androidx.compose.material3.Icon(Icons.Outlined.FolderOpen, null) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun AddToPlaylistOverlay(
+    entry: LibraryEntry,
+    playlists: List<musicunlock.library.LibraryPlaylist>,
+    onClose: () -> Unit,
+    onAdd: (String) -> Unit,
+    onCreate: (String) -> Unit,
+) {
+    val t = cleanTokens()
+    var newName by remember { mutableStateOf("") }
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.38f)).clickable(onClick = onClose),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(430.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(t.surface)
+                .border(1.dp, t.cardBorder, RoundedCornerShape(18.dp))
+                .clickable(onClick = {})
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("加入本地歌单", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = t.text)
+            Text(entry.title ?: File(entry.path).nameWithoutExtension, fontSize = 11.5.sp, color = t.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (playlists.isEmpty()) {
+                Text("还没有本地歌单，可直接创建新歌单。", fontSize = 12.sp, color = t.textMuted)
+            } else {
+                Column(Modifier.height(180.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    playlists.forEach { playlist ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onAdd(playlist.id) }.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(playlist.name, modifier = Modifier.weight(1f), fontSize = 12.5.sp, color = t.text, maxLines = 1)
+                            Text("加入", fontSize = 11.sp, color = t.primary)
+                        }
+                    }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    placeholder = { Text("新歌单名称", fontSize = 12.sp) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(UiMetrics.ControlRadius),
+                )
+                AppTextAction("创建并加入", onClick = { if (newName.isNotBlank()) onCreate(newName.trim()) }, filled = true)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                AppTextAction("取消", onClick = onClose, outlined = true)
+            }
+        }
+    }
+}
+
+private fun LibraryEntry.toPlayerTrack(): PlayerTrack = PlayerTrack(
+    platformId = platform ?: "local",
+    localPath = path,
+    isFavorite = isFavorite,
+    song = musicunlock.online.MusicSong(
+        id = sourceSongId ?: path,
+        name = title ?: File(path).nameWithoutExtension,
+        artists = artist?.split('/', '、', ',', '；', ';')?.map(String::trim)?.filter(String::isNotBlank).orEmpty(),
+        albumName = album,
+        coverUrl = null,
+        durationSeconds = durationSeconds,
+        trackNumber = trackNumber,
+        discNumber = discNumber,
+        year = year,
+        genre = genre,
+        composer = composer,
+        isrc = isrc,
+        metadata = mapOf("localPath" to path),
+    ),
+)
+
+private data class TagUndo(
+    val snapshots: List<Pair<LibraryEntry, EditableTags>>,
+    val fields: Set<EditableTagField>,
+)

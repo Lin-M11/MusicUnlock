@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import musicunlock.library.EditableTagField
 import musicunlock.library.EditableTags
 import musicunlock.library.LibraryEntry
 import java.io.File
@@ -40,7 +41,10 @@ import java.io.File
 @Composable
 internal fun TagEditorOverlay(
     entry: LibraryEntry,
-    onSave: (EditableTags) -> Unit,
+    batchMode: Boolean = false,
+    selectedFields: Set<EditableTagField> = EditableTagField.entries.toSet(),
+    onSelectionChange: (Set<EditableTagField>) -> Unit = {},
+    onSave: (EditableTags, Set<EditableTagField>) -> Unit,
     onClose: () -> Unit,
 ) {
     val t = cleanTokens()
@@ -89,6 +93,30 @@ internal fun TagEditorOverlay(
             }
             Box(Modifier.weight(1f, fill = false).verticalScroll(scroll)) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (batchMode) {
+                        Text("批量写入范围", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = t.textSecondary)
+                        Text(
+                            if (selectedFields.isEmpty()) "请先勾选要写入的字段；未勾选时不会改动任何文件。" else "只覆盖勾选字段，未选择的内容保持不变。",
+                            fontSize = 10.5.sp,
+                            color = if (selectedFields.isEmpty()) t.error else t.textMuted,
+                        )
+                        EditableTagField.entries.chunked(4).forEach { row ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                row.forEach { field ->
+                                    AppChoiceChip(
+                                        text = field.displayName(),
+                                        selected = field in selectedFields,
+                                        onClick = {
+                                            onSelectionChange(
+                                                if (field in selectedFields) selectedFields - field else selectedFields + field,
+                                            )
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(2.dp))
+                    }
                     TagField("标题", title) { title = it }
                     TagField("歌手", artist) { artist = it }
                     TagField("专辑", album) { album = it }
@@ -147,6 +175,7 @@ internal fun TagEditorOverlay(
                 AppTextAction(
                     text = "保存标签",
                     filled = true,
+                    enabled = !batchMode || selectedFields.isNotEmpty(),
                     modifier = Modifier.height(UiMetrics.ControlHeight),
                     onClick = {
                         onSave(
@@ -166,6 +195,7 @@ internal fun TagEditorOverlay(
                                 rating = rating,
                                 favorite = favorite,
                             ),
+                            selectedFields,
                         )
                     },
                 )
@@ -213,4 +243,21 @@ private fun TagTextArea(label: String, value: String, onValueChange: (String) ->
         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, color = t.text),
         modifier = Modifier.fillMaxWidth(),
     )
+}
+
+private fun EditableTagField.displayName(): String = when (this) {
+    EditableTagField.TITLE -> "标题"
+    EditableTagField.ARTIST -> "歌手"
+    EditableTagField.ALBUM -> "专辑"
+    EditableTagField.ALBUM_ARTIST -> "专辑歌手"
+    EditableTagField.TRACK_NUMBER -> "音轨号"
+    EditableTagField.DISC_NUMBER -> "碟号"
+    EditableTagField.YEAR -> "年份"
+    EditableTagField.GENRE -> "流派"
+    EditableTagField.COMPOSER -> "作曲"
+    EditableTagField.ISRC -> "ISRC"
+    EditableTagField.LYRICS -> "歌词"
+    EditableTagField.COVER -> "封面"
+    EditableTagField.RATING -> "评分"
+    EditableTagField.FAVORITE -> "收藏"
 }

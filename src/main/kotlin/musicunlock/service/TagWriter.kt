@@ -61,34 +61,42 @@ object TagWriter {
     ): Boolean = embed(audioFile, AudioTagData(title = title, artist = artist, album = album, cover = cover))
 
     /** 将完整标签写回音频文件;成功返回 true,失败返回 false(不抛异常)。 */
-    fun embed(audioFile: File, tags: AudioTagData): Boolean {
+    fun embed(
+        audioFile: File,
+        tags: AudioTagData,
+        clearFields: Set<FieldKey> = emptySet(),
+        clearCover: Boolean = false,
+    ): Boolean {
         return try {
             val audio = AudioFileIO.read(audioFile)
             val tag = audio.tag ?: audio.createDefaultTag()
 
-            set(tag, FieldKey.ALBUM, tags.album)
-            set(tag, FieldKey.TITLE, tags.title)
-            set(tag, FieldKey.ARTIST, tags.artist)
-            set(tag, FieldKey.ALBUM_ARTIST, tags.albumArtist ?: tags.artist)
-            set(tag, FieldKey.TRACK, tags.trackNumber?.toString())
-            set(tag, FieldKey.DISC_NO, tags.discNumber?.toString())
-            set(tag, FieldKey.YEAR, tags.year?.toString())
-            set(tag, FieldKey.GENRE, tags.genre)
-            set(tag, FieldKey.COMPOSER, tags.composer)
-            set(tag, FieldKey.ISRC, tags.isrc)
-            set(tag, FieldKey.LYRICS, tags.lyrics)
-            set(tag, FieldKey.QUALITY, tags.quality)
-            if (tags.rating != null) {
+            set(tag, FieldKey.ALBUM, tags.album, FieldKey.ALBUM in clearFields)
+            set(tag, FieldKey.TITLE, tags.title, FieldKey.TITLE in clearFields)
+            set(tag, FieldKey.ARTIST, tags.artist, FieldKey.ARTIST in clearFields)
+            set(tag, FieldKey.ALBUM_ARTIST, tags.albumArtist ?: tags.artist, FieldKey.ALBUM_ARTIST in clearFields)
+            set(tag, FieldKey.TRACK, tags.trackNumber?.toString(), FieldKey.TRACK in clearFields)
+            set(tag, FieldKey.DISC_NO, tags.discNumber?.toString(), FieldKey.DISC_NO in clearFields)
+            set(tag, FieldKey.YEAR, tags.year?.toString(), FieldKey.YEAR in clearFields)
+            set(tag, FieldKey.GENRE, tags.genre, FieldKey.GENRE in clearFields)
+            set(tag, FieldKey.COMPOSER, tags.composer, FieldKey.COMPOSER in clearFields)
+            set(tag, FieldKey.ISRC, tags.isrc, FieldKey.ISRC in clearFields)
+            set(tag, FieldKey.LYRICS, tags.lyrics, FieldKey.LYRICS in clearFields)
+            set(tag, FieldKey.QUALITY, tags.quality, FieldKey.QUALITY in clearFields)
+            if (FieldKey.RATING in clearFields) {
+                runCatching { tag.deleteField(FieldKey.RATING) }
+            } else if (tags.rating != null) {
                 runCatching {
                     if (tags.rating > 0) tag.setField(FieldKey.RATING, tags.rating.toString())
                     else tag.deleteField(FieldKey.RATING)
                 }
             }
-            set(tag, FieldKey.CUSTOM2, tags.favorite?.let { if (it) "favorite=1" else "favorite=0" })
+            set(tag, FieldKey.CUSTOM2, tags.favorite?.let { if (it) "favorite=1" else "favorite=0" }, FieldKey.CUSTOM2 in clearFields)
             if (!tags.platform.isNullOrBlank() || !tags.sourceSongId.isNullOrBlank()) {
                 set(tag, FieldKey.CUSTOM1, listOfNotNull(tags.platform, tags.sourceSongId).joinToString(":"))
             }
 
+            if (clearCover) runCatching { tag.deleteArtworkField() }
             tags.cover?.takeIf { it.isNotEmpty() }?.let { bytes ->
                 runCatching {
                     val image = ImageIO.read(ByteArrayInputStream(bytes))
@@ -156,7 +164,11 @@ object TagWriter {
         }
     }.trim()
 
-    private fun set(tag: Tag, key: FieldKey, value: String?) {
+    private fun set(tag: Tag, key: FieldKey, value: String?, clear: Boolean = false) {
+        if (clear) {
+            runCatching { tag.deleteField(key) }
+            return
+        }
         if (value.isNullOrBlank()) return
         runCatching { tag.setField(key, value) }
     }
