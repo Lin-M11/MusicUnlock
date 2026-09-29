@@ -7,7 +7,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import musicunlock.core.Formats
 import musicunlock.automation.AutomationActionService
+import musicunlock.automation.AutomationHistoryStore
 import musicunlock.automation.AutomationRuleEngine
+import musicunlock.automation.AutomationRunRecord
 import musicunlock.service.MusicConverter
 import musicunlock.service.ConversionTaskManager
 import musicunlock.service.ConversionTaskSnapshot
@@ -23,7 +25,7 @@ import java.util.UUID
 
 class WatchEventResult(val path: String, val success: Boolean, val message: String?)
 
-/** 监听收件箱目录，新出现的受支持加密文件自动解密转换。 */
+/** 监听收件箱目录，新出现的加密格式文件自动解密转换。普通音频不在监听范围内。 */
 class FolderWatcherService(
     private val settingsProvider: () -> AppSettings,
     private val conversionManager: ConversionTaskManager? = null,
@@ -32,6 +34,7 @@ class FolderWatcherService(
     private val pending = ConcurrentHashMap<String, Long>()
     private val pendingAutomation = ConcurrentHashMap<String, PendingAutomation>()
     private val actions = AutomationActionService()
+    private val history = AutomationHistoryStore()
     private val roots = mutableMapOf<WatchKey, File>()
 
     init {
@@ -69,7 +72,7 @@ class FolderWatcherService(
                             val relative = event.context() as? java.nio.file.Path ?: return@forEach
                             val child = root.toPath().resolve(relative).toFile()
                             if (child.isDirectory) registerRecursively(child, watchService)
-                            if (child.isFile && Formats.isSupported(child.name)) pending[child.absolutePath] = System.currentTimeMillis()
+                            if (child.isFile && Formats.isEncryptedExtension(child.extension)) pending[child.absolutePath] = System.currentTimeMillis()
                         }
                     }
                     if (!key.reset()) roots.remove(key)
@@ -121,10 +124,18 @@ class FolderWatcherService(
                 val actionMessages = if (error == null) {
                     rule?.let { actions.afterMatch(it, file, File(effective.outputDir)) }.orEmpty()
                 } else emptyList()
-                onResult(WatchEventResult(path, error == null, listOfNotNull(
+                val message = listOfNotNull(
                     error,
                     actionMessages.takeIf { it.isNotEmpty() }?.joinToString("；"),
-                ).joinToString(" · ").ifBlank { null }))
+                ).joinToString(" · ").ifBlank { null }
+                history.add(AutomationRunRecord(
+                    ruleId = rule?.id,
+                    ruleName = rule?.name ?: "默认",
+                    inputPath = file.absolutePath,
+                    success = error == null,
+                    message = message ?: "转换完成",
+                ))
+                onResult(WatchEventResult(path, error == null, message))
             }
         }
     }
@@ -138,22 +149,32 @@ class FolderWatcherService(
                 val actionMessages = pendingTask.rule
                     ?.let { actions.afterMatch(it, pendingTask.input, outputDir, task.outputFile) }
                     .orEmpty()
-                onResult(WatchEventResult(
-                    pendingTask.input.absolutePath,
-                    true,
-                    listOfNotNull(
-                        if (task.state == ConversionTaskState.COMPLETED) "已按规则「${pendingTask.rule?.name ?: "默认"}」转换完成" else "输出文件已存在，已跳过",
-                        actionMessages.takeIf { it.isNotEmpty() }?.joinToString("；"),
-                    ).joinToString(" · "),
+                val message = listOfNotNull(
+                    if (task.state == ConversionTaskState.COMPLETED) "已按规则「${pendingTask.rule?.name ?: "默认"}」转换完成" else "输出文件已存在，已跳过",
+                    actionMessages.takeIf { it.isNotEmpty() }?.joinToString("；"),
+                ).joinToString(" · ")
+                history.add(AutomationRunRecord(
+                    ruleId = pendingTask.rule?.id,
+                    ruleName = pendingTask.rule?.name ?: "默认",
+                    inputPath = pendingTask.input.absolutePath,
+                    outputPath = task.outputFile?.absolutePath,
+                    success = true,
+                    message = message,
                 ))
+                onResult(WatchEventResult(pendingTask.input.absolutePath, true, message))
             }
             ConversionTaskState.FAILED, ConversionTaskState.CANCELLED, ConversionTaskState.DUPLICATE -> {
                 pendingAutomation.remove(task.id)
-                onResult(WatchEventResult(
-                    pendingTask.input.absolutePath,
-                    false,
-                    task.message ?: task.state.name,
+                val message = task.message ?: task.state.name
+                history.add(AutomationRunRecord(
+                    ruleId = pendingTask.rule?.id,
+                    ruleName = pendingTask.rule?.name ?: "默认",
+                    inputPath = pendingTask.input.absolutePath,
+                    outputPath = task.outputFile?.absolutePath,
+                    success = false,
+                    message = message,
                 ))
+                onResult(WatchEventResult(pendingTask.input.absolutePath, false, message))
             }
             else -> Unit
         }
