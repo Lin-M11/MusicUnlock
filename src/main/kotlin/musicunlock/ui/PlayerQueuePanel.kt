@@ -25,7 +25,7 @@ import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -220,7 +220,7 @@ private fun HistoryTrackRow(
                 size = 28.dp,
             )
         }
-        AppIconButton(Icons.Outlined.PlaylistAdd, "重新加入队列", { onAddToQueue(track) }, size = 28.dp)
+        AppIconButton(Icons.AutoMirrored.Outlined.PlaylistAdd, "重新加入队列", { onAddToQueue(track) }, size = 28.dp)
     }
 }
 

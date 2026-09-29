@@ -34,7 +34,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -838,7 +838,7 @@ private fun LibraryTrackActions(
             DropdownMenuItem(
                 text = { Text("加入本地歌单") },
                 onClick = { expanded = false; onAddToPlaylist() },
-                leadingIcon = { androidx.compose.material3.Icon(Icons.Outlined.PlaylistAdd, null) },
+                leadingIcon = { androidx.compose.material3.Icon(Icons.AutoMirrored.Outlined.PlaylistAdd, null) },
             )
             DropdownMenuItem(
                 text = { Text("编辑完整标签") },
