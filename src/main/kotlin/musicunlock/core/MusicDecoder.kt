@@ -13,7 +13,7 @@ class MusicResult(
     val cover: ByteArray? = null,
 )
 
-/** 加密音乐格式解码器:输入整个加密文件,输出解密后的音频与元数据。 */
+/** 音频解码器:输入整个文件,输出可写入的音频数据与元数据。加密格式在此解密,原始格式直接透传。 */
 interface MusicDecoder {
     fun decode(data: ByteArray, fileName: String): MusicResult
 

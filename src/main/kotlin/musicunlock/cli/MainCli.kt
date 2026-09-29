@@ -25,7 +25,7 @@ import java.io.File
 
 /**
  * 命令行入口:
- *   -c,--convert [path] ...  转换 path 下的所有加密音乐文件
+ *   -c,--convert [path] ...  转换 path 下的所有受支持音频文件(加密格式与常见原始格式)
  *   -o,--output [dir]        指定输出目录(默认 ./output)
  *   -j,--jobs [n]            并发转换数(默认 CPU 核数)
  *   -d,--dedup               按解密后音频内容去重
@@ -380,16 +380,16 @@ object MainCli {
         }
         println("Output dir is set to: ${outputPath.absolutePath}")
 
-        // 收集所有加密音乐文件
+        // 收集所有受支持的输入文件(加密格式与常见原始音频)
         val files = mutableListOf<File>()
         for (param in inputs) {
             MusicConverter.listAllFiles(files, File(param))
         }
         if (files.isEmpty()) {
-            println("没有找到支持的加密音乐文件")
+            println("没有找到支持的音频文件")
             return 1
         }
-        println("找到 ${files.size} 个加密音乐文件")
+        println("找到 ${files.size} 个音频文件")
 
         val selected = if (dedup) dedup(files) else files
         if (selected.size != files.size) {
@@ -465,13 +465,14 @@ object MainCli {
     fun printHelp() {
         println("MusicUnlock - 多平台加密音乐格式转换工具 (Kotlin + Compose Multiplatform)")
         println("支持格式: ${Formats.supportedExtensions().joinToString(" / ")}")
+        println("  (加密格式解密后转码;原始音频直接转码)")
         println()
         println("Usage: MusicUnlock [command]")
         println("If don't add command, there will open MusicUnlock GUI directly")
         println("[Command List]")
         println("-v,-view                         : open MusicUnlock GUI(default command)")
-        println("-c,--convert [path] ...          : convert encrypted music files in path")
-        println("                                  (支持文件或文件夹,可多个路径)")
+        println("-c,--convert [path] ...          : convert supported audio files in path")
+        println("                                  (加密格式与常见原始格式;支持文件或文件夹,可多个路径)")
         println("-o,--output [dir]                : custom output directory(default ./output)")
         println("-j,--jobs [n]                    : parallel conversion count(default CPU cores)")
         println("-d,--dedup                       : skip duplicate files by content hash")

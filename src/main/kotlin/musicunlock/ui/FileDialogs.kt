@@ -15,7 +15,7 @@ object FileDialogs {
         chooser.isMultiSelectionEnabled = true
         chooser.fileSelectionMode = JFileChooser.FILES_ONLY
         chooser.fileFilter = FileNameExtensionFilter(
-            "加密音乐 (${extensions.joinToString("/")})",
+            "音乐文件（${extensions.size} 种格式）",
             *extensions.toTypedArray(),
         )
         return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) {
@@ -36,7 +36,7 @@ object FileDialogs {
         val chooser = JFileChooser()
         chooser.dialogTitle = title
         chooser.fileSelectionMode = JFileChooser.FILES_ONLY
-        if (extensions.isNotEmpty()) chooser.fileFilter = FileNameExtensionFilter("配置 (${extensions.joinToString("/")})", *extensions.toTypedArray())
+        if (extensions.isNotEmpty()) chooser.fileFilter = FileNameExtensionFilter(title, *extensions.toTypedArray())
         return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
     }
 

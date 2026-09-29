@@ -156,6 +156,46 @@ class MusicConverterIntegrationTest {
     }
 
     @Test
+    fun convertPlainWavToMp3EndToEnd() {
+        val ffmpeg = AudioTranscoder.locateFfmpeg()
+        assertTrue(ffmpeg != null, "应用应能定位可用的 ffmpeg：${BundledFfmpeg.lastFailure().orEmpty()}")
+        val dir = Files.createTempDirectory("musicunlock-wav-mp3-test")
+        val input = dir.resolve("tone.wav")
+        Files.write(input, TestAudio.pcmWav())
+
+        val error = MusicConverter.convertWithError(
+            input.toString(),
+            dir.resolve("out").toString(),
+            OutputFormat.MP3,
+            192,
+        )
+
+        assertNull(error, "WAV 转 MP3 应成功")
+        val output = dir.resolve("out").resolve("tone.mp3")
+        assertTrue(Files.exists(output), "应生成 MP3 输出")
+        assertTrue(Files.size(output) > 0L, "MP3 输出不应为空")
+    }
+
+    @Test
+    fun plainWavKeepsOriginalFormatWhenOutputFormatIsOriginal() {
+        val dir = Files.createTempDirectory("musicunlock-wav-original-test")
+        val wav = TestAudio.pcmWav()
+        val input = dir.resolve("tone.wav")
+        Files.write(input, wav)
+
+        val outcome = MusicConverter.convertOne(
+            inputPath = input.toString(),
+            outputDir = dir.resolve("out").toString(),
+            outputFormat = OutputFormat.ORIGINAL,
+            bitrateKbps = 320,
+            forceOverwrite = false,
+        )
+
+        assertNull(outcome.error, "原始格式输出应成功")
+        assertContentEquals(wav, Files.readAllBytes(dir.resolve("out").resolve("tone.wav")))
+    }
+
+    @Test
     fun transcodeToM4aUsesGenericOutputPipeline() {
         val source = Files.createTempFile("musicunlock-transcode-source", ".flac")
         val target = source.parent.resolve(source.fileName.toString().substringBeforeLast('.') + ".m4a")

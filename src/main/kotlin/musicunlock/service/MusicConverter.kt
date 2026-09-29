@@ -104,7 +104,7 @@ object MusicConverter {
     }
 
     /**
-     * 转换单个加密音乐文件,成功返回 null,失败返回错误信息。
+     * 转换单个音频文件,成功返回 null,失败返回错误信息。
      */
     fun convertWithError(
         inputPath: String,
@@ -247,7 +247,7 @@ object MusicConverter {
         return digest.joinToString("") { "%02x".format(it) }
     }
 
-    /** 递归收集 path 下的所有受支持加密音乐文件。 */
+    /** 递归收集 path 下的所有受支持音频文件。 */
     fun listAllFiles(files: MutableList<File>, file: File) {
         if (!file.isDirectory) {
             if (Formats.isSupported(file.name)) files.add(file)
