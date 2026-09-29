@@ -29,6 +29,28 @@ class MediaServerIntegrationService(
         .followRedirects(HttpClient.Redirect.NORMAL)
         .build()
 
+    fun testConnection(server: MediaServerConfig): MediaServerScanResult = runCatching {
+        when (server.type) {
+            MediaServerType.PLEX -> {
+                val token = requireSecret(server, "Plex Token")
+                send(HttpRequest.newBuilder(URI.create("${server.baseUrl}/identity?X-Plex-Token=${encode(token)}")).GET().build())
+            }
+            MediaServerType.JELLYFIN -> {
+                val token = requireSecret(server, "Jellyfin API Key")
+                send(HttpRequest.newBuilder(URI.create("${server.baseUrl}/System/Info")).header("X-Emby-Token", token).GET().build())
+            }
+            MediaServerType.NAVIDROME, MediaServerType.SUBSONIC -> {
+                val secret = requireSecret(server, "Subsonic 密码")
+                val username = server.username ?: error("缺少 Subsonic 用户名")
+                val salt = UUID.randomUUID().toString().take(8)
+                val token = md5(secret + salt)
+                val query = queryString(linkedMapOf("u" to username, "t" to token, "s" to salt, "v" to "1.16.1", "c" to "MusicUnlock", "f" to "json"))
+                send(HttpRequest.newBuilder(URI.create("${server.baseUrl}/rest/ping.view?$query")).GET().build())
+            }
+        }
+        MediaServerScanResult(server.name, true, "连接成功")
+    }.getOrElse { MediaServerScanResult(server.name, false, it.message ?: it.toString()) }
+
     fun trigger(server: MediaServerConfig, path: String? = null): MediaServerScanResult = runCatching {
         when (server.type) {
             MediaServerType.PLEX -> scanPlex(server, path)

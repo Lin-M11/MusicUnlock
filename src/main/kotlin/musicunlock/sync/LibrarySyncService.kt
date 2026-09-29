@@ -21,6 +21,7 @@ import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.time.Duration
 import java.util.Base64
+import java.util.Locale
 
 data class SyncFileState(
     val relativePath: String,
@@ -65,11 +66,38 @@ class LibrarySyncService(
         .followRedirects(HttpClient.Redirect.NORMAL)
         .build()
 
-    fun sync(profile: LibrarySyncProfile, entries: List<LibraryEntry>): SyncResult =
-        when (profile.destinationType) {
-            SyncDestinationType.LOCAL_FOLDER -> syncLocal(profile, entries)
-            SyncDestinationType.WEBDAV -> syncWebDav(profile, entries)
+    fun sync(profile: LibrarySyncProfile, entries: List<LibraryEntry>): SyncResult {
+        val filtered = entries.filterNot { entry -> profile.excludePatterns.any { matchesPattern(it, entry) } }
+        return when (profile.destinationType) {
+            SyncDestinationType.LOCAL_FOLDER -> syncLocal(profile, filtered)
+            SyncDestinationType.WEBDAV -> syncWebDav(profile, filtered)
         }
+    }
+
+    /**
+     * 按通配符模式匹配曲库条目：`*` 匹配任意字符，`?` 匹配单个字符。
+     * 其余正则元字符按字面量处理，避免用户输入 `+`、`(`、`[` 等字符时抛异常中断同步。
+     */
+    private fun matchesPattern(pattern: String, entry: LibraryEntry): Boolean {
+        val normalized = pattern.trim().lowercase(Locale.ROOT)
+        if (normalized.isEmpty()) return false
+        val candidates = listOf(entry.path, File(entry.path).name, entry.artist.orEmpty(), entry.album.orEmpty())
+            .map { it.lowercase(Locale.ROOT) }
+        val regex = Regex(wildcardToRegex(normalized), RegexOption.IGNORE_CASE)
+        return candidates.any { regex.matches(it) }
+    }
+
+    private fun wildcardToRegex(pattern: String): String = buildString {
+        append('^')
+        pattern.forEach { ch ->
+            when (ch) {
+                '*' -> append(".*")
+                '?' -> append('.')
+                else -> append(if (ch in REGEX_METACHARACTERS) "\\$ch" else ch.toString())
+            }
+        }
+        append('$')
+    }
 
     private fun syncLocal(profile: LibrarySyncProfile, entries: List<LibraryEntry>): SyncResult {
         val root = profile.localPath?.let(::File)?.absoluteFile ?: return SyncResult(errors = listOf("未配置本地同步目录"))
@@ -406,5 +434,6 @@ class LibrarySyncService(
     private companion object {
         const val MANIFEST_FILE = ".musicunlock-sync.json"
         const val WEBDAV_PASSWORD = "webdav-password"
+        const val REGEX_METACHARACTERS = "\\^$.|?*+()[]{}"
     }
 }

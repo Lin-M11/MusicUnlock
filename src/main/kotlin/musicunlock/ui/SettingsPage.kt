@@ -37,12 +37,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import musicunlock.automation.AutomationHistoryStore
+import musicunlock.automation.AutomationRuleEngine
 import musicunlock.backup.AppBackupService
 import musicunlock.desktop.AutoStartService
 import musicunlock.diagnostics.Diagnostics
 import musicunlock.library.LibraryIndex
 import musicunlock.sync.LibrarySyncService
 import musicunlock.sync.MediaServerIntegrationService
+import musicunlock.sync.SyncResult
 import musicunlock.online.DownloadTaskManager
 import musicunlock.service.ConversionTaskManager
 import musicunlock.settings.AppSettings
@@ -99,6 +102,8 @@ internal fun SettingsPage(
     var webdavPassword by remember { mutableStateOf("") }
     var webdavRemoteFile by remember(settings.webdavRemoteFile) { mutableStateOf(settings.webdavRemoteFile) }
     var editingRule by remember { mutableStateOf<AutomationRule?>(null) }
+    var automationHistoryOpen by remember { mutableStateOf(false) }
+    var automationHistory by remember { mutableStateOf(AutomationHistoryStore().all()) }
     val librarySync = remember { LibrarySyncService() }
     val mediaServers = remember { MediaServerIntegrationService() }
     var mediaServerType by remember { mutableStateOf(MediaServerType.PLEX) }
@@ -106,6 +111,8 @@ internal fun SettingsPage(
     var mediaServerUrl by remember { mutableStateOf("") }
     var mediaServerUsername by remember { mutableStateOf("") }
     var mediaServerSecret by remember { mutableStateOf("") }
+    var syncResult by remember { mutableStateOf<SyncResult?>(null) }
+    var syncResultOpen by remember { mutableStateOf(false) }
 
     fun exportBackup() {
         val target = FileDialogs.saveFile("导出完整备份", "MusicUnlock-backup.zip") ?: return
@@ -254,6 +261,18 @@ internal fun SettingsPage(
                         }
                     }
                 }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SettingsAction("测试规则") {
+                        FileDialogs.pickFile("选择自动化测试文件", musicunlock.core.Formats.encryptedExtensions())?.let { file ->
+                            val matched = AutomationRuleEngine.simulate(settings, file)
+                            status = if (matched.isEmpty()) "没有规则匹配 ${file.name}" else "匹配 ${matched.size} 条规则：${matched.joinToString("、") { it.name }}"
+                        }
+                    }
+                    SettingsAction("执行历史") {
+                        automationHistory = AutomationHistoryStore().all()
+                        automationHistoryOpen = true
+                    }
+                }
                 SettingsAction("添加默认规则") {
                     val input = settings.watchFolders.firstOrNull() ?: settings.outputDir
                     val rule = AutomationRule(
@@ -265,7 +284,7 @@ internal fun SettingsPage(
                         bitrateKbps = settings.bitrateKbps,
                         outputTemplate = settings.localOutputTemplate,
                         existingFilePolicy = settings.localExistingFilePolicy,
-                        extensions = musicunlock.core.Formats.supportedExtensions(),
+                        extensions = musicunlock.core.Formats.encryptedExtensions(),
                     )
                     onUpdateSettings { current -> current.copy(automationRules = current.automationRules + rule) }
                 }
@@ -323,6 +342,7 @@ internal fun SettingsPage(
                 NumberSetting("低频增强 dB", settings.playerBassBoostDb, -12, 12) { value -> onUpdateSettings { it.copy(playerBassBoostDb = value) } }
                 NumberSetting("高频增强 dB", settings.playerTrebleBoostDb, -12, 12) { value -> onUpdateSettings { it.copy(playerTrebleBoostDb = value) } }
                 NumberSetting("淡入淡出秒数", settings.playerFadeSeconds, 0, 12) { value -> onUpdateSettings { it.copy(playerFadeSeconds = value) } }
+                NumberSetting("曲间淡化秒数", settings.playerCrossfadeSeconds, 0, 12) { value -> onUpdateSettings { it.copy(playerCrossfadeSeconds = value) } }
             }
 
             SettingsCard("设备与曲库同步") {
@@ -365,6 +385,7 @@ internal fun SettingsPage(
                                 val result = withContext(Dispatchers.IO) {
                                     runCatching { librarySync.sync(profile, library.all()) }
                                 }
+                                result.onSuccess { syncResult = it; syncResultOpen = true }
                                 status = result.fold({ "同步完成：${it.summary}" }, { "同步失败：${it.message}" })
                                 busy = false
                             }
@@ -374,6 +395,28 @@ internal fun SettingsPage(
                             onUpdateSettings { current -> current.copy(librarySyncProfiles = current.librarySyncProfiles.filterNot { it.id == profile.id }) }
                         }
                     }
+                    SettingsTextField(
+                        profile.excludePatterns.joinToString(", "),
+                        "排除规则，如 *Live*、*.mp3、某歌手/*",
+                        fill = true,
+                    ) { value ->
+                        val patterns = value.split(',', '，').map(String::trim).filter(String::isNotEmpty)
+                        onUpdateSettings { current ->
+                            current.copy(librarySyncProfiles = current.librarySyncProfiles.map {
+                                if (it.id == profile.id) it.copy(excludePatterns = patterns) else it
+                            })
+                        }
+                    }
+                }
+                if (automationHistoryOpen) {
+                    AutomationHistoryOverlay(
+                        records = automationHistory,
+                        onClear = { AutomationHistoryStore().clear(); automationHistory = emptyList() },
+                        onClose = { automationHistoryOpen = false },
+                    )
+                }
+                syncResult?.let { result ->
+                    SettingsAction("查看上次同步结果：${result.summary}") { syncResultOpen = true }
                 }
                 SettingsSpacer()
                 SettingsLabel("媒体服务器刷新")
@@ -382,6 +425,12 @@ internal fun SettingsPage(
                         Column(Modifier.weight(1f)) {
                             Text(server.name, fontSize = 12.sp, color = t.text, maxLines = 1)
                             Text("${server.type.name} · ${server.baseUrl}", fontSize = 10.5.sp, color = t.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        SettingsAction("测试") {
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) { mediaServers.testConnection(server) }
+                                status = "${server.name}：${result.message}"
+                            }
                         }
                         SettingsAction("触发扫描", primary = true) {
                             scope.launch {
@@ -524,6 +573,11 @@ internal fun SettingsPage(
         }
         }
         AppVerticalScrollbar(state = scroll, modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 4.dp))
+        if (syncResultOpen) {
+            syncResult?.let { result ->
+                SyncResultOverlay(result = result, onClose = { syncResultOpen = false })
+            }
+        }
         editingRule?.let { rule ->
             AutomationRuleEditorOverlay(
                 initial = rule,
@@ -536,6 +590,100 @@ internal fun SettingsPage(
                 },
                 onClose = { editingRule = null },
             )
+        }
+    }
+}
+
+@Composable
+private fun AutomationHistoryOverlay(
+    records: List<musicunlock.automation.AutomationRunRecord>,
+    onClear: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val t = cleanTokens()
+    androidx.compose.ui.window.Dialog(onCloseRequest = onClose) {
+        Column(
+            modifier = Modifier
+                .width(620.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(t.surface)
+                .border(1.dp, t.cardBorder, RoundedCornerShape(18.dp))
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("自动化执行历史", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = t.text)
+                    Text("最近 ${records.size} 次规则执行", fontSize = 11.5.sp, color = t.textMuted)
+                }
+                AppTextAction("清空", onClick = onClear, outlined = true)
+                Spacer(Modifier.width(8.dp))
+                AppTextAction("关闭", onClick = onClose, filled = true)
+            }
+            if (records.isEmpty()) {
+                Box(Modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) {
+                    Text("还没有自动化执行记录", fontSize = 12.sp, color = t.textMuted)
+                }
+            } else {
+                Column(Modifier.height(420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    records.forEach { record ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(t.surfaceSoft).padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(Modifier.width(8.dp).height(8.dp).clip(RoundedCornerShape(4.dp)).background(if (record.success) t.success else t.error))
+                            Spacer(Modifier.width(9.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("${record.ruleName} · ${File(record.inputPath).name}", fontSize = 12.sp, color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(record.message, fontSize = 10.5.sp, color = t.textMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                            Text(java.time.Instant.ofEpochMilli(record.createdAt).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")), fontSize = 10.5.sp, color = t.textMuted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SyncResultOverlay(result: SyncResult, onClose: () -> Unit) {
+    val t = cleanTokens()
+    androidx.compose.ui.window.Dialog(onCloseRequest = onClose) {
+        Column(
+            modifier = Modifier
+                .width(560.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(t.surface)
+                .border(1.dp, t.cardBorder, RoundedCornerShape(18.dp))
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("同步结果", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = t.text)
+                    Text(result.summary, fontSize = 12.sp, color = t.textMuted)
+                }
+                AppTextAction("关闭", onClick = onClose, filled = true)
+            }
+            if (result.conflicts.isNotEmpty()) {
+                Text("冲突项", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = t.textSecondary)
+                result.conflicts.take(20).forEach { conflict ->
+                    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(t.surfaceSoft).padding(10.dp)) {
+                        Text(conflict.relativePath, fontSize = 11.5.sp, color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(conflict.reason, fontSize = 10.5.sp, color = t.textMuted)
+                    }
+                }
+            }
+            if (result.errors.isNotEmpty()) {
+                Text("错误", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = t.error)
+                result.errors.take(20).forEach { error ->
+                    Text(error, fontSize = 11.sp, color = t.error, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (result.conflicts.isEmpty() && result.errors.isEmpty()) {
+                Text("没有冲突或错误，所有文件均按当前策略处理。", fontSize = 12.sp, color = t.textMuted)
+            }
         }
     }
 }
