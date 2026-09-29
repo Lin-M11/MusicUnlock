@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.musicunlock"
-version = "2.2.0"
+version = "2.3.0"
 
 val ffmpegVersion = "7.1-1.5.11"
 val ffmpegPlatform = run {
@@ -86,7 +86,7 @@ compose.desktop {
             modules("java.sql", "java.net.http", "jdk.httpserver")
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "MusicUnlock"
-            packageVersion = "2.2.0"
+            packageVersion = "2.3.0"
             description = "MusicUnlock - convert encrypted music files to open audio formats"
             vendor = "MusicUnlock"
             licenseFile.set(project.file("LICENSE"))
