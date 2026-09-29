@@ -164,6 +164,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -180,12 +182,38 @@ jobs:
           cp dist/MusicUnlock-linux/rpm/*.rpm assets/
           VERSION="$GITHUB_REF_NAME"
           (cd assets && find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' | sort -z | xargs -0 sha256sum) > assets/SHA256SUMS.txt
+
+          # 更新内容取自 CHANGELOG.md 里当前版本的章节，保证 Release 页面能看到本版本改了什么
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::缺少 CHANGELOG.md，无法生成 $VERSION 的更新内容"
+            exit 1
+          fi
+          TAG="${VERSION#v}"
+          awk -v v="$TAG" '
+            $0 ~ ("^## +\\[?" v "\\]?") { found = 1; next }
+            found && /^## / { exit }
+            found && !/^[[:space:]]*$/ { started = 1 }
+            found && started { print }
+          ' CHANGELOG.md > changes.md
+          if [ ! -s changes.md ]; then
+            echo "::error::CHANGELOG.md 里没有 $TAG 的章节，请先补上该版本的更新内容再发版"
+            exit 1
+          fi
+
+          {
+            echo "## 更新内容"
+            echo
+            cat changes.md
+            echo
+            echo "## 下载"
+            echo
+            echo "- **Windows**：单文件 \`MusicUnlock-$VERSION-windows.exe\`，内嵌 JRE，无外部资源文件，双击直接运行（首次启动自动解压到临时目录，退出后自动清理）"
+            echo "- **macOS**：\`MusicUnlock-$VERSION.dmg\` 磁盘映像，拖入「应用程序」即可"
+            echo "- **Linux**：\`deb\` 与 \`rpm\` 安装包"
+            echo "- **校验**：\`SHA256SUMS.txt\`"
+            echo "- **签名**：CI 在配置证书时自动签名；macOS 在配置公证凭据时同时完成公证与装订"
+          } > notes.md
+
           gh release create -R "$GITHUB_REPOSITORY" "$VERSION" assets/* \
             --title "MusicUnlock $VERSION" \
-            --notes "**MusicUnlock $VERSION**
-
-            - **Windows**：单文件 \`MusicUnlock-$VERSION-windows.exe\`，内嵌 JRE，无外部资源文件，双击直接运行（首次启动自动解压到临时目录，退出后自动清理）
-            - **macOS**：\`MusicUnlock-$VERSION.dmg\` 磁盘映像，拖入「应用程序」即可
-            - **Linux**：\`deb\` 与 \`rpm\` 安装包
-            - **校验**：\`SHA256SUMS.txt\`
-            - **签名**：CI 在配置证书时自动签名；macOS 在配置公证凭据时同时完成公证与装订"
+            --notes-file notes.md
