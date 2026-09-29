@@ -206,64 +206,6 @@ class LibraryMaintenanceService(
         )
     }.getOrNull()
 
-    fun updateTags(
-        entry: LibraryEntry,
-        title: String?,
-        artist: String?,
-        album: String?,
-        year: Int?,
-        genre: String?,
-        composer: String?,
-        isrc: String?,
-        lyrics: String? = null,
-        cover: ByteArray? = null,
-        albumArtist: String? = null,
-        trackNumber: Int? = null,
-        discNumber: Int? = null,
-    ): Boolean {
-        val file = File(entry.path)
-        if (!file.isFile) return false
-        val ok = TagWriter.embed(
-            file,
-            AudioTagData(
-                title = title?.trim()?.takeIf(String::isNotBlank),
-                artist = artist?.trim()?.takeIf(String::isNotBlank),
-                album = album?.trim()?.takeIf(String::isNotBlank),
-                albumArtist = albumArtist?.trim()?.takeIf(String::isNotBlank),
-                trackNumber = trackNumber,
-                discNumber = discNumber,
-                year = year,
-                genre = genre?.trim()?.takeIf(String::isNotBlank),
-                composer = composer?.trim()?.takeIf(String::isNotBlank),
-                isrc = isrc?.trim()?.takeIf(String::isNotBlank),
-                lyrics = lyrics?.trim()?.takeIf(String::isNotBlank),
-                cover = cover,
-                platform = entry.platform,
-                sourceSongId = entry.sourceSongId,
-            ),
-        )
-        if (ok) index.upsert(file, entry.platform, entry.sourceSongId, hash = false)
-        return ok
-    }
-
-    fun updateTagsBatch(
-        entries: List<LibraryEntry>,
-        title: String?,
-        artist: String?,
-        album: String?,
-        year: Int?,
-        genre: String?,
-        composer: String?,
-        isrc: String?,
-        lyrics: String? = null,
-        cover: ByteArray? = null,
-        albumArtist: String? = null,
-        trackNumber: Int? = null,
-        discNumber: Int? = null,
-    ): Int = entries.count { entry ->
-        updateTags(entry, title, artist, album, year, genre, composer, isrc, lyrics, cover, albumArtist, trackNumber, discNumber)
-    }
-
     fun removeDuplicates(groups: List<List<LibraryEntry>>): Int {
         var removed = 0
         DuplicateCleanupPlanner.plan(groups).decisions
