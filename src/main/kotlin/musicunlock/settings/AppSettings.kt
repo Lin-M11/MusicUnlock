@@ -105,6 +105,7 @@ data class LibrarySyncProfile(
     val outputTemplate: String = "{artist}/{album}/{title}",
     val mirrorDeletes: Boolean = false,
     val conflictPolicy: SyncConflictPolicy = SyncConflictPolicy.KEEP_NEWER,
+    val excludePatterns: List<String> = emptyList(),
 )
 
 data class AutomationRule(
@@ -191,6 +192,7 @@ data class AppSettings(
     val playerBassBoostDb: Int = 0,
     val playerTrebleBoostDb: Int = 0,
     val playerFadeSeconds: Int = 2,
+    val playerCrossfadeSeconds: Int = 0,
     val localApiEnabled: Boolean = false,
     val localApiPort: Int = 17_893,
     val localApiToken: String? = null,

@@ -197,6 +197,7 @@ class SettingsRepository internal constructor(
             playerBassBoostDb = source.playerBassBoostDb.coerceIn(-12, 12),
             playerTrebleBoostDb = source.playerTrebleBoostDb.coerceIn(-12, 12),
             playerFadeSeconds = source.playerFadeSeconds.coerceIn(0, 12),
+            playerCrossfadeSeconds = source.playerCrossfadeSeconds.coerceIn(0, 12),
             mediaServers = source.mediaServers.orEmptySafe()
                 .filter { !it.id.isNullOrBlank() && !it.baseUrl.isNullOrBlank() }
                 .map {
@@ -228,6 +229,7 @@ class SettingsRepository internal constructor(
                             SyncConflictPolicy.entries,
                             SyncConflictPolicy.KEEP_NEWER,
                         ),
+                        excludePatterns = it.excludePatterns.orEmptySafe().map(String::trim).filter(String::isNotEmpty).distinct(),
                     )
                 },
             localApiPort = if (source.localApiPort == 0) 17_893 else source.localApiPort.coerceIn(1024, 65_535),

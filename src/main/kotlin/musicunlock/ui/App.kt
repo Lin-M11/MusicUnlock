@@ -246,6 +246,7 @@ fun MusicUnlockApp(onResetWindowSize: () -> Unit = {}) {
                     bassBoostDb = current.playerBassBoostDb,
                     trebleBoostDb = current.playerTrebleBoostDb,
                     fadeSeconds = current.playerFadeSeconds,
+                    crossfadeSeconds = current.playerCrossfadeSeconds,
                 )
             },
         )
@@ -451,8 +452,8 @@ fun MainScreen(
 ) {
     val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf(0) }
-    var lyricsVisible by remember { mutableStateOf(false) }
-    var queueVisible by remember { mutableStateOf(false) }
+    var playerOverlay by remember { mutableStateOf<PlayerOverlay?>(null) }
+    var miniPlayerVisible by remember { mutableStateOf(false) }
     var update by remember { mutableStateOf<ReleaseInfo?>(null) }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var updateBusy by remember { mutableStateOf(false) }
@@ -504,6 +505,7 @@ fun MainScreen(
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Row(Modifier.fillMaxSize().background(t.bg)) {
         AppSidebar(
             page = page,
@@ -582,7 +584,7 @@ fun MainScreen(
                         DropZone(
                             files = files,
                             onAddFiles = {
-                                val selected = FileDialogs.pickFiles("选择加密音乐文件", Formats.supportedExtensions())
+                                val selected = FileDialogs.pickFiles("选择音乐文件", Formats.supportedExtensions())
                                 addPaths(files, selected.map { it.absolutePath })
                             },
                             onAddFolder = {
@@ -725,10 +727,6 @@ fun MainScreen(
             if (playerState.current != null) {
                 PlayerBar(
                     player = audioPlayer,
-                    onToggleLyrics = { lyricsVisible = !lyricsVisible },
-                    lyricsVisible = lyricsVisible,
-                    onToggleQueue = { queueVisible = !queueVisible },
-                    queueVisible = queueVisible,
                     onDownload = { track ->
                         val provider = musicunlock.online.ProviderRegistry.find(track.platformId)
                         if (provider != null) {
@@ -745,17 +743,105 @@ fun MainScreen(
                             )
                         }
                     },
+                    onOpenNowPlaying = { playerOverlay = PlayerOverlay.NOW_PLAYING },
+                    onOpenQueue = { playerOverlay = if (playerOverlay == PlayerOverlay.QUEUE) null else PlayerOverlay.QUEUE },
+                    queueVisible = playerOverlay == PlayerOverlay.QUEUE,
+                    onOpenMiniPlayer = { miniPlayerVisible = true },
+                    onToggleFavorite = { track ->
+                        val path = track.localPath ?: return@PlayerBar
+                        val next = !track.isFavorite
+                        library.toggleFavorite(path, next)
+                        audioPlayer.markFavorite(path, next)
+                    },
                 )
-                if (queueVisible) {
-                    PlayerQueuePanel(player = audioPlayer, modifier = Modifier.fillMaxWidth())
-                }
-                if (lyricsVisible) {
-                    PlayerLyricsPanel(player = audioPlayer, modifier = Modifier.fillMaxWidth())
-                }
             }
         }
+        }
+
+    when (playerOverlay) {
+        PlayerOverlay.QUEUE -> PlayerQueueOverlay(
+            player = audioPlayer,
+            onClose = { playerOverlay = null },
+            onOpenNowPlaying = { playerOverlay = PlayerOverlay.NOW_PLAYING },
+            onSaveQueue = { tracks ->
+                val paths = tracks.mapNotNull { it.localPath }
+                if (paths.isNotEmpty()) {
+                    val playlist = library.createPlaylist("播放队列 ${System.currentTimeMillis()}")
+                    library.addToPlaylist(playlist.id, paths)
+                }
+            },
+            onToggleFavorite = { track ->
+                val path = track.localPath ?: return@PlayerQueueOverlay
+                val next = !track.isFavorite
+                library.toggleFavorite(path, next)
+                audioPlayer.markFavorite(path, next)
+            },
+        )
+        PlayerOverlay.NOW_PLAYING -> NowPlayingOverlay(
+            player = audioPlayer,
+            audioPreferences = musicunlock.player.PlaybackAudioPreferences(
+                loudnessNormalization = settings.playerLoudnessNormalization,
+                bassBoostDb = settings.playerBassBoostDb,
+                trebleBoostDb = settings.playerTrebleBoostDb,
+                fadeSeconds = settings.playerFadeSeconds,
+                crossfadeSeconds = settings.playerCrossfadeSeconds,
+            ),
+            onClose = { playerOverlay = null },
+            onOpenQueue = { playerOverlay = PlayerOverlay.QUEUE },
+            onDownload = { track ->
+                val provider = musicunlock.online.ProviderRegistry.find(track.platformId)
+                if (provider != null) {
+                    downloadManager.enqueue(
+                        provider = provider,
+                        song = track.song,
+                        outputDir = File(settings.outputDir),
+                        preferences = settings.toOnlineDownloadPreferences().copy(
+                            targetFormat = TranscodeFormat.MP3,
+                            forceMp3 = true,
+                            mp3BitrateKbps = settings.bitrateKbps,
+                        ),
+                        playlistName = "播放器下载",
+                    )
+                }
+            },
+            onToggleFavorite = { track ->
+                val path = track.localPath ?: return@NowPlayingOverlay
+                val next = !track.isFavorite
+                library.toggleFavorite(path, next)
+                audioPlayer.markFavorite(path, next)
+            },
+            onImportLyrics = {
+                val track = playerState.current
+                val local = track?.localPath?.let(::File)?.takeIf(File::isFile)
+                if (local != null) {
+                    val target = File(local.parentFile, "${local.nameWithoutExtension}.lrc")
+                    FileDialogs.pickFile("导入歌词", listOf("lrc", "txt"))?.takeIf(File::isFile)?.let { source ->
+                        runCatching {
+                            target.writeText(source.readText())
+                            audioPlayer.reloadLyrics()
+                        }
+                    }
+                }
+            },
+            onUpdateSettings = onUpdateSettings,
+        )
+        null -> Unit
+    }
+    LaunchedEffect(playerState.current) {
+        if (playerState.current == null) {
+            playerOverlay = null
+            miniPlayerVisible = false
+        }
+    }
+    MiniPlayerWindow(
+        player = audioPlayer,
+        visible = miniPlayerVisible && playerState.current != null,
+        onClose = { miniPlayerVisible = false },
+    )
     }
 }
+
+private enum class PlayerOverlay { QUEUE, NOW_PLAYING }
 
 @Composable
 private fun WorkspaceHeader(
@@ -766,7 +852,7 @@ private fun WorkspaceHeader(
 ) {
     val t = cleanTokens()
     val (title, subtitle) = when (page) {
-        0 -> "格式转换" to "拖入加密音乐，保留标签与封面输出标准音频"
+        0 -> "格式转换" to "拖入加密音乐或常见原始音频，保留标签与封面输出标准音频"
         1 -> "网易云下载" to "登录后选择歌单，下载歌曲"
         2 -> "QQ 音乐下载" to "登录后选择歌单，下载歌曲"
         3 -> "酷狗下载" to "登录后选择收藏与创建的歌单，下载歌曲"
@@ -1264,7 +1350,7 @@ private fun AboutOverlay(onClose: () -> Unit) {
             )
             Spacer(Modifier.height(14.dp))
             Text(
-                "多平台加密音乐格式转换工具:网易云 / QQ 音乐 / 酷狗 / 酷我,解密后输出标准音频格式,保留标签与封面。",
+                "多平台加密音乐格式转换工具:网易云 / QQ 音乐 / 酷狗 / 酷我,解密后输出标准音频格式,保留标签与封面;也支持 WAV、FLAC、APE、MP3 等常见音频直接转码。",
                 fontSize = 12.5.sp,
                 lineHeight = 19.sp,
                 textAlign = TextAlign.Center,
@@ -1443,14 +1529,14 @@ private fun DropZone(files: SnapshotStateList<FileItem>, onAddFiles: () -> Unit,
             }
             Spacer(Modifier.height(10.dp))
             Text(
-                "拖拽加密音乐文件 / 文件夹 到这里",
+                "拖拽音乐文件 / 文件夹 到这里",
                 fontSize = 15.5.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = if (hovering) t.primary else t.text,
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "NCM · QMC · MFLAC · MGG · KGM · KWM 等 ${Formats.supportedExtensions().size} 种格式，自动识别真实音频并保留标签与封面",
+                "NCM · QMC · MFLAC · MGG · KGM · KWM 等加密格式与 WAV · FLAC · APE · MP3 等原始格式，共 ${Formats.supportedExtensions().size} 种；自动识别真实音频并保留标签与封面",
                 fontSize = 12.5.sp,
                 color = t.textSecondary,
                 textAlign = TextAlign.Center,
@@ -1537,7 +1623,7 @@ private fun ColumnScope.QueueCard(
                         )
                         Spacer(Modifier.height(10.dp))
                         Text(
-                            "还没有添加文件\n拖拽或点击上方区域选择加密音乐文件",
+                            "还没有添加文件\n拖拽或点击上方区域选择音乐文件",
                             fontSize = 13.sp,
                             color = t.textSecondary,
                             textAlign = TextAlign.Center,
@@ -1660,6 +1746,7 @@ private fun ExtBadge(ext: String) {
         ext == "ncm" -> t.ncmBg to t.ncmFg
         ext == "kgm" || ext == "kgma" || ext == "vpr" -> t.kgmBg to t.kgmFg
         ext == "kwm" -> t.kwmBg to t.kwmFg
+        Formats.isPlainExtension(ext) -> t.extBg to t.extFg
         else -> t.qmcBg to t.qmcFg
     }
     Box(

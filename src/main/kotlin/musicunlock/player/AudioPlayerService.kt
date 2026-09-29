@@ -34,6 +34,7 @@ data class PlayerTrack(
     val song: MusicSong,
     val quality: QualityStrategy = QualityStrategy.MP3_320,
     val localPath: String? = null,
+    val isFavorite: Boolean = false,
 )
 
 data class PlaybackAudioPreferences(
@@ -41,6 +42,7 @@ data class PlaybackAudioPreferences(
     val bassBoostDb: Int = 0,
     val trebleBoostDb: Int = 0,
     val fadeSeconds: Int = 2,
+    val crossfadeSeconds: Int = 0,
 )
 
 data class PlayerLyricLine(
@@ -49,6 +51,8 @@ data class PlayerLyricLine(
 )
 
 enum class PlayerPlaybackState { IDLE, LOADING, PLAYING, PAUSED, ERROR }
+
+enum class RepeatMode { OFF, ALL, ONE }
 
 data class PlayerSnapshot(
     val current: PlayerTrack? = null,
@@ -61,6 +65,11 @@ data class PlayerSnapshot(
     val message: String? = null,
     val lyrics: List<PlayerLyricLine> = emptyList(),
     val lyricIndex: Int = -1,
+    val lyricOffsetMillis: Long = 0L,
+    val history: List<PlayerTrack> = emptyList(),
+    val shuffleEnabled: Boolean = false,
+    val repeatMode: RepeatMode = RepeatMode.OFF,
+    val playbackSpeed: Float = 1f,
     val sleepRemainingMillis: Long = 0L,
 )
 
@@ -95,6 +104,9 @@ class AudioPlayerService internal constructor(
     private var generation = 0L
     private var closing = false
     private var sleepTimerEndAt = 0L
+    private val persistLock = Any()
+    private var lastPersistAt = 0L
+    private var persistJob: Job? = null
 
     init {
         restoreState()
@@ -103,7 +115,12 @@ class AudioPlayerService internal constructor(
     @Synchronized
     fun playQueue(tracks: List<PlayerTrack>, index: Int = 0) {
         if (tracks.isEmpty()) return
-        playAt(tracks, index.coerceIn(0, tracks.lastIndex))
+        playAt(
+            tracks = tracks,
+            index = index.coerceIn(0, tracks.lastIndex),
+            historyOverride = emptyList(),
+            recordHistory = false,
+        )
     }
 
     @Synchronized
@@ -113,6 +130,7 @@ class AudioPlayerService internal constructor(
                 platformId = entry.platform ?: "local",
                 quality = QualityStrategy.MP3_320,
                 localPath = entry.path,
+                isFavorite = entry.isFavorite,
                 song = MusicSong(
                     id = entry.sourceSongId ?: entry.path,
                     name = entry.title ?: File(entry.path).nameWithoutExtension,
@@ -169,20 +187,20 @@ class AudioPlayerService internal constructor(
             }
             PlayerPlaybackState.ERROR, PlayerPlaybackState.IDLE -> {
                 val current = snapshot.current ?: return
-                playAt(if (snapshot.queue.isEmpty()) listOf(current) else snapshot.queue, snapshot.queueIndex.coerceAtLeast(0))
+                playAt(
+                    tracks = if (snapshot.queue.isEmpty()) listOf(current) else snapshot.queue,
+                    index = snapshot.queueIndex.coerceAtLeast(0),
+                    resumeMillis = snapshot.positionMillis,
+                    historyOverride = snapshot.history,
+                    recordHistory = false,
+                )
             }
             PlayerPlaybackState.LOADING -> Unit
         }
     }
 
     @Synchronized
-    fun next() {
-        val snapshot = mutableState.value
-        if (snapshot.queue.isEmpty()) return
-        snapshot.current?.let { runCatching { onSkipped(it) } }
-        val nextIndex = if (snapshot.queueIndex + 1 < snapshot.queue.size) snapshot.queueIndex + 1 else 0
-        playAt(snapshot.queue, nextIndex)
-    }
+    fun next() = advance(manual = true)
 
     @Synchronized
     fun previous() {
@@ -191,10 +209,141 @@ class AudioPlayerService internal constructor(
         if (engine.positionMillis() > 5_000L) {
             engine.seekTo(0L)
             mutableState.value = snapshot.copy(positionMillis = 0L)
+            persistState()
             return
         }
-        val previousIndex = if (snapshot.queueIndex > 0) snapshot.queueIndex - 1 else snapshot.queue.lastIndex
-        playAt(snapshot.queue, previousIndex)
+        val previousTrack = snapshot.history.lastOrNull()
+        val previousIndex = previousTrack?.let { track ->
+            snapshot.queue.indexOfFirst { it.sameTrack(track) }
+        } ?: -1
+        if (previousIndex >= 0) {
+            playAt(
+                tracks = snapshot.queue,
+                index = previousIndex,
+                historyOverride = snapshot.history.dropLast(1),
+                recordHistory = false,
+            )
+            return
+        }
+        val fallbackIndex = if (snapshot.queueIndex > 0) snapshot.queueIndex - 1 else if (snapshot.repeatMode == RepeatMode.ALL) snapshot.queue.lastIndex else 0
+        playAt(snapshot.queue, fallbackIndex, historyOverride = emptyList(), recordHistory = false)
+    }
+
+    @Synchronized
+    fun playNext(tracks: List<PlayerTrack>) {
+        if (tracks.isEmpty()) return
+        val snapshot = mutableState.value
+        if (snapshot.current == null || snapshot.queueIndex !in snapshot.queue.indices) {
+            playQueue(tracks)
+            return
+        }
+        val insertAt = (snapshot.queueIndex + 1).coerceAtMost(snapshot.queue.size)
+        val queue = snapshot.queue.toMutableList().apply { addAll(insertAt, tracks) }
+        mutableState.value = snapshot.copy(queue = queue)
+        persistState()
+    }
+
+    @Synchronized
+    fun addToQueue(tracks: List<PlayerTrack>) {
+        if (tracks.isEmpty()) return
+        val snapshot = mutableState.value
+        if (snapshot.current == null || snapshot.queueIndex !in snapshot.queue.indices) {
+            playQueue(tracks)
+            return
+        }
+        mutableState.value = snapshot.copy(queue = snapshot.queue + tracks)
+        persistState()
+    }
+
+    @Synchronized
+    fun toggleShuffle() {
+        val snapshot = mutableState.value
+        mutableState.value = snapshot.copy(shuffleEnabled = !snapshot.shuffleEnabled)
+        persistState()
+    }
+
+    @Synchronized
+    fun cycleRepeatMode() {
+        val snapshot = mutableState.value
+        val next = when (snapshot.repeatMode) {
+            RepeatMode.OFF -> RepeatMode.ALL
+            RepeatMode.ALL -> RepeatMode.ONE
+            RepeatMode.ONE -> RepeatMode.OFF
+        }
+        mutableState.value = snapshot.copy(repeatMode = next)
+        persistState()
+    }
+
+    @Synchronized
+    fun clearUpcoming() {
+        val snapshot = mutableState.value
+        if (snapshot.current == null || snapshot.queueIndex !in snapshot.queue.indices) return
+        mutableState.value = snapshot.copy(queue = snapshot.queue.take(snapshot.queueIndex + 1))
+        persistState()
+    }
+
+    @Synchronized
+    fun clearHistory() {
+        val snapshot = mutableState.value
+        mutableState.value = snapshot.copy(history = emptyList())
+        persistState()
+    }
+
+    @Synchronized
+    fun setPlaybackSpeed(speed: Float) {
+        val snapshot = mutableState.value
+        val normalized = speed.coerceIn(0.5f, 2f)
+        if (kotlin.math.abs(snapshot.playbackSpeed - normalized) < 0.01f) return
+        mutableState.value = snapshot.copy(playbackSpeed = normalized)
+        persistState()
+        reloadCurrentAudio()
+    }
+
+    /** 按当前音效与倍速重新加载当前曲目，使均衡器、响度等设置变更立即生效。 */
+    @Synchronized
+    fun reloadCurrentAudio() {
+        val snapshot = mutableState.value
+        val current = snapshot.current ?: return
+        playAt(
+            tracks = snapshot.queue.ifEmpty { listOf(current) },
+            index = snapshot.queueIndex.coerceAtLeast(0),
+            resumeMillis = snapshot.positionMillis,
+            historyOverride = snapshot.history,
+            recordHistory = false,
+        )
+    }
+
+    @Synchronized
+    fun adjustLyricOffset(deltaMillis: Long) {
+        val snapshot = mutableState.value
+        mutableState.value = snapshot.copy(lyricOffsetMillis = (snapshot.lyricOffsetMillis + deltaMillis).coerceIn(-30_000L, 30_000L))
+        persistState()
+    }
+
+    @Synchronized
+    fun resetLyricOffset() {
+        mutableState.value = mutableState.value.copy(lyricOffsetMillis = 0L)
+        persistState()
+    }
+
+    @Synchronized
+    fun reloadLyrics() {
+        val snapshot = mutableState.value
+        val current = snapshot.current ?: return
+        mutableState.value = snapshot.copy(lyrics = loadLyrics(current), lyricIndex = -1)
+        persistState()
+    }
+
+    @Synchronized
+    fun markFavorite(path: String, favorite: Boolean) {
+        val snapshot = mutableState.value
+        fun PlayerTrack.marked(): PlayerTrack = if (localPath == path) copy(isFavorite = favorite) else this
+        mutableState.value = snapshot.copy(
+            current = snapshot.current?.marked(),
+            queue = snapshot.queue.map { it.marked() },
+            history = snapshot.history.map { it.marked() },
+        )
+        persistState()
     }
 
     @Synchronized
@@ -281,37 +430,116 @@ class AudioPlayerService internal constructor(
         monitorJob?.cancel()
         engine.stop()
         sleepTimerEndAt = 0L
-        mutableState.value = PlayerSnapshot(volume = mutableState.value.volume)
+        val previous = mutableState.value
+        mutableState.value = PlayerSnapshot(
+            volume = previous.volume,
+            shuffleEnabled = previous.shuffleEnabled,
+            repeatMode = previous.repeatMode,
+            playbackSpeed = previous.playbackSpeed,
+        )
         persistState()
     }
 
     @Synchronized
-    private fun playAt(tracks: List<PlayerTrack>, index: Int) {
-        if (closing) return
+    private fun advance(manual: Boolean) {
+        val snapshot = mutableState.value
+        val current = snapshot.current ?: return
+        if (snapshot.queue.isEmpty()) {
+            stop()
+            return
+        }
+        if (!manual && snapshot.repeatMode == RepeatMode.ONE) {
+            runCatching { onCompleted(current) }
+            engine.seekTo(0L)
+            engine.play()
+            mutableState.value = snapshot.copy(
+                state = PlayerPlaybackState.PLAYING,
+                positionMillis = 0L,
+                lyricIndex = -1,
+                message = null,
+            )
+            startMonitor()
+            persistState()
+            return
+        }
+        if (manual) runCatching { onSkipped(current) } else runCatching { onCompleted(current) }
+        val nextIndex = nextQueueIndex(snapshot, manual)
+        if (nextIndex < 0) {
+            engine.stop()
+            mutableState.value = snapshot.copy(
+                state = PlayerPlaybackState.IDLE,
+                positionMillis = 0L,
+                lyricIndex = -1,
+                message = if (manual) "已停止播放" else "播放队列已结束",
+            )
+            persistState()
+            return
+        }
+        playAt(snapshot.queue, nextIndex)
+    }
+
+    private fun nextQueueIndex(snapshot: PlayerSnapshot, manual: Boolean): Int {
+        if (snapshot.queue.isEmpty()) return -1
+        if (snapshot.shuffleEnabled && snapshot.queue.size > 1) {
+            val candidates = snapshot.queue.indices.filter { it != snapshot.queueIndex }
+            return candidates.random()
+        }
+        val next = snapshot.queueIndex + 1
+        if (next in snapshot.queue.indices) return next
+        return if (snapshot.repeatMode == RepeatMode.ALL) 0 else -1
+    }
+
+    @Synchronized
+    private fun playAt(
+        tracks: List<PlayerTrack>,
+        index: Int,
+        resumeMillis: Long = 0L,
+        historyOverride: List<PlayerTrack>? = null,
+        recordHistory: Boolean = true,
+    ) {
+        if (closing || tracks.isEmpty() || index !in tracks.indices) return
         val token = ++generation
         loadJob?.cancel()
         monitorJob?.cancel()
         engine.stop()
+        val previous = mutableState.value
+        val history = historyOverride ?: if (recordHistory && previous.current != null) {
+            (previous.history + previous.current).takeLast(100)
+        } else {
+            previous.history
+        }
         val track = tracks[index]
+        val preferences = audioPreferences()
+        val playbackSpeed = previous.playbackSpeed.coerceIn(0.5f, 2f)
+        val filters = playbackFilters(track, preferences, playbackSpeed)
         mutableState.value = PlayerSnapshot(
             current = track,
             queue = tracks,
             queueIndex = index,
             state = PlayerPlaybackState.LOADING,
-            volume = mutableState.value.volume,
+            positionMillis = resumeMillis.coerceAtLeast(0L),
+            volume = previous.volume,
             message = "正在准备播放",
             lyrics = loadLyrics(track),
+            lyricOffsetMillis = previous.lyricOffsetMillis,
+            history = history,
+            shuffleEnabled = previous.shuffleEnabled,
+            repeatMode = previous.repeatMode,
+            playbackSpeed = playbackSpeed,
+            sleepRemainingMillis = previous.sleepRemainingMillis,
         )
         loadJob = scope.launch {
-            runCatching { loadTrack(track) }
+            runCatching { loadTrack(track, filters) }
                 .onSuccess { wav ->
                     if (token != generation) return@onSuccess
                     engine.load(wav)
                     engine.setVolume(mutableState.value.volume)
+                    val safeResume = resumeMillis.coerceIn(0L, engine.durationMillis().coerceAtLeast(0L))
+                    if (safeResume > 0L) engine.seekTo(safeResume)
                     engine.play()
                     mutableState.value = mutableState.value.copy(
                         state = PlayerPlaybackState.PLAYING,
-                        positionMillis = 0L,
+                        positionMillis = safeResume,
                         durationMillis = engine.durationMillis(),
                         message = null,
                         lyricIndex = -1,
@@ -329,13 +557,14 @@ class AudioPlayerService internal constructor(
         }
     }
 
-    private fun loadTrack(track: PlayerTrack): File {
+    private fun loadTrack(track: PlayerTrack, filters: List<String>): File {
         cacheDir.mkdirs()
-        val cached = File(cacheDir, track.cacheKey() + ".wav")
+        val cacheKey = track.cacheKey(filters)
+        val cached = File(cacheDir, "$cacheKey.wav")
         if (cached.isFile && cached.length() > 0L) return cached
 
         val local = track.localPath?.let(::File)?.takeIf(File::isFile)
-        val downloaded = File(cacheDir, track.cacheKey() + ".source")
+        val downloaded = File(cacheDir, "$cacheKey.source")
         val source = if (local == null) {
             val provider = providerResolver(track.platformId) ?: error("未找到播放平台：${track.platformId}")
             provider.playback(track.song, track.quality)
@@ -351,9 +580,9 @@ class AudioPlayerService internal constructor(
             error("播放地址没有返回音频数据")
         }
 
-        val temporary = File(cacheDir, track.cacheKey() + ".tmp.wav")
+        val temporary = File(cacheDir, "$cacheKey.tmp.wav")
         try {
-            if (local != null && local.extension.lowercase() in setOf("wav", "wave", "aif", "aiff", "au")) {
+            if (local != null && filters.isEmpty() && local.extension.lowercase() in setOf("wav", "wave", "aif", "aiff", "au")) {
                 Files.move(
                     downloaded.toPath(),
                     temporary.toPath(),
@@ -364,7 +593,7 @@ class AudioPlayerService internal constructor(
                     input = downloaded,
                     output = temporary,
                     format = TranscodeFormat.WAV,
-                    audioFilters = playbackFilters(track),
+                    audioFilters = filters,
                 )
                 if (error != null) error(error)
             }
@@ -382,21 +611,42 @@ class AudioPlayerService internal constructor(
             downloaded.delete()
             temporary.delete()
         }
+        trimCache(cached)
         return cached
     }
 
-    private fun playbackFilters(track: PlayerTrack): List<String> {
-        val preferences = audioPreferences()
-        return buildList {
-            if (preferences.loudnessNormalization) add("loudnorm=I=-14:LRA=11:TP=-1.5")
-            if (preferences.bassBoostDb != 0) add("equalizer=f=100:t=q:w=1:g=${preferences.bassBoostDb}")
-            if (preferences.trebleBoostDb != 0) add("equalizer=f=10000:t=q:w=1:g=${preferences.trebleBoostDb}")
-            val fade = preferences.fadeSeconds.coerceIn(0, 12)
-            if (fade > 0) {
-                add("afade=t=in:st=0:d=$fade")
-                val duration = track.song.durationSeconds?.takeIf { it > fade * 2 }
-                if (duration != null) add("afade=t=out:st=${duration - fade}:d=$fade")
-            }
+    /**
+     * 播放缓存按「曲目 + 滤镜组合」分文件，切换均衡器或倍速都会产生新条目。
+     * 这里按条目数与总大小淘汰最旧的文件，避免缓存无限增长。
+     */
+    private fun trimCache(keep: File) {
+        val candidates = cacheDir.listFiles { file -> file.isFile && file.name.endsWith(".wav") }
+            ?.filter { it.absolutePath != keep.absolutePath }
+            ?.sortedBy { it.lastModified() }
+            ?.toMutableList() ?: return
+        var totalBytes = candidates.sumOf { it.length() } + keep.length()
+        while (candidates.isNotEmpty() && (candidates.size + 1 > MAX_CACHE_FILES || totalBytes > MAX_CACHE_BYTES)) {
+            val oldest = candidates.removeAt(0)
+            totalBytes -= oldest.length()
+            runCatching { oldest.delete() }
+        }
+    }
+
+    private fun playbackFilters(
+        track: PlayerTrack,
+        preferences: PlaybackAudioPreferences,
+        playbackSpeed: Float,
+    ): List<String> = buildList {
+        if (preferences.loudnessNormalization) add("loudnorm=I=-14:LRA=11:TP=-1.5")
+        if (preferences.bassBoostDb != 0) add("equalizer=f=100:t=q:w=1:g=${preferences.bassBoostDb}")
+        if (preferences.trebleBoostDb != 0) add("equalizer=f=10000:t=q:w=1:g=${preferences.trebleBoostDb}")
+        val speed = playbackSpeed.coerceIn(0.5f, 2f)
+        if (kotlin.math.abs(speed - 1f) > 0.01f) add("atempo=$speed")
+        val fade = maxOf(preferences.fadeSeconds.coerceIn(0, 12), preferences.crossfadeSeconds.coerceIn(0, 12))
+        if (fade > 0) {
+            add("afade=t=in:st=0:d=$fade")
+            val duration = track.song.durationSeconds?.let { (it / speed).toInt() }?.takeIf { it > fade * 2 }
+            if (duration != null) add("afade=t=out:st=${duration - fade}:d=$fade")
         }
     }
 
@@ -436,18 +686,42 @@ class AudioPlayerService internal constructor(
         }.getOrNull() ?: return
         mutableState.value = snapshot.copy(
             state = PlayerPlaybackState.IDLE,
-            positionMillis = 0L,
-            message = if (snapshot.current == null) null else "已恢复上次播放队列",
+            positionMillis = snapshot.positionMillis.coerceAtLeast(0L),
+            durationMillis = snapshot.durationMillis.coerceAtLeast(0L),
+            repeatMode = snapshot.repeatMode ?: RepeatMode.OFF,
+            playbackSpeed = snapshot.playbackSpeed.coerceIn(0.5f, 2f),
+            message = if (snapshot.current == null) null else "已恢复上次播放位置",
         )
     }
 
+    /**
+     * 状态文件用于恢复播放位置与队列。拖动进度条或音量会高频触发，这里按 [PERSIST_INTERVAL_MS]
+     * 节流，并在最后一次变更后补写一次，避免每帧写盘。
+     */
     private fun persistState() {
         val file = stateFile ?: return
-        runCatching {
-            file.parentFile?.mkdirs()
-            val temp = File.createTempFile(file.name, ".tmp", file.parentFile)
-            temp.writeText(com.google.gson.GsonBuilder().disableHtmlEscaping().create().toJson(mutableState.value))
-            Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        val elapsed = System.currentTimeMillis() - lastPersistAt
+        if (elapsed < PERSIST_INTERVAL_MS) {
+            if (persistJob?.isActive != true) {
+                persistJob = scope.launch {
+                    delay(PERSIST_INTERVAL_MS - elapsed)
+                    writeState(file)
+                }
+            }
+            return
+        }
+        writeState(file)
+    }
+
+    private fun writeState(file: File) {
+        synchronized(persistLock) {
+            lastPersistAt = System.currentTimeMillis()
+            runCatching {
+                file.parentFile?.mkdirs()
+                val temp = File.createTempFile(file.name, ".tmp", file.parentFile)
+                temp.writeText(com.google.gson.GsonBuilder().disableHtmlEscaping().create().toJson(mutableState.value))
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
         }
     }
 
@@ -461,8 +735,7 @@ class AudioPlayerService internal constructor(
                 val position = engine.positionMillis()
                 val duration = engine.durationMillis().takeIf { it > 0L } ?: snapshot.durationMillis
                 if (duration > 0L && !engine.isPlaying() && position >= duration - 300L) {
-                    snapshot.current?.let { runCatching { onCompleted(it) } }
-                    next()
+                    advance(manual = false)
                     return@launch
                 }
                 val remainingSleep = if (sleepTimerEndAt > 0L) (sleepTimerEndAt - System.currentTimeMillis()).coerceAtLeast(0L) else 0L
@@ -471,13 +744,16 @@ class AudioPlayerService internal constructor(
                     stop()
                     return@launch
                 }
-                val lyricIndex = snapshot.lyrics.indexOfLast { it.timeMillis <= position }
-                mutableState.value = snapshot.copy(
-                    positionMillis = position,
-                    durationMillis = duration,
-                    lyricIndex = lyricIndex,
-                    sleepRemainingMillis = remainingSleep,
-                )
+                val lyricPosition = (position + snapshot.lyricOffsetMillis).coerceAtLeast(0L)
+                val lyricIndex = snapshot.lyrics.indexOfLast { it.timeMillis <= lyricPosition }
+                synchronized(this@AudioPlayerService) {
+                    mutableState.value = mutableState.value.copy(
+                        positionMillis = position,
+                        durationMillis = duration,
+                        lyricIndex = lyricIndex,
+                        sleepRemainingMillis = remainingSleep,
+                    )
+                }
                 if (System.currentTimeMillis() % 2_000L < 260L) persistState()
             }
         }
@@ -493,6 +769,12 @@ class AudioPlayerService internal constructor(
             mutableState.value = PlayerSnapshot()
         }
         scope.cancel()
+    }
+
+    private companion object {
+        const val PERSIST_INTERVAL_MS = 1_000L
+        const val MAX_CACHE_FILES = 32
+        const val MAX_CACHE_BYTES = 3L * 1024 * 1024 * 1024
     }
 }
 
@@ -558,8 +840,8 @@ private class JavaSoundPlaybackEngine : AudioPlaybackEngine {
     }
 }
 
-private fun PlayerTrack.cacheKey(): String {
-    val raw = "$platformId:${song.id}:${quality.name}:${song.durationSeconds ?: 0}:${localPath ?: ""}"
+private fun PlayerTrack.cacheKey(filters: List<String> = emptyList()): String {
+    val raw = "$platformId:${song.id}:${quality.name}:${song.durationSeconds ?: 0}:${localPath ?: ""}:${filters.joinToString("|")}"
     return MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
 }
@@ -567,3 +849,7 @@ private fun PlayerTrack.cacheKey(): String {
 fun defaultPlayerCacheDir(): File = File(System.getProperty("user.home"), ".musicunlock/player-cache")
 
 fun defaultPlayerStateFile(): File = File(System.getProperty("user.home"), ".musicunlock/player-state.json")
+
+private fun PlayerTrack.sameTrack(other: PlayerTrack): Boolean =
+    (localPath != null && localPath == other.localPath) ||
+        (platformId == other.platformId && song.id == other.song.id)
