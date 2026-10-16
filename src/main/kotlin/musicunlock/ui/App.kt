@@ -35,16 +35,20 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,7 +66,9 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.NewReleases
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -91,6 +97,7 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
@@ -102,11 +109,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -421,6 +430,7 @@ fun showWindow() {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MainScreen(
     dark: Boolean,
@@ -447,6 +457,7 @@ fun MainScreen(
     var update by remember { mutableStateOf<ReleaseInfo?>(null) }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var updateBusy by remember { mutableStateOf(false) }
+    var dropHot by remember { mutableStateOf(false) }
 
     // 启动时检查一次 GitHub Releases；失败静默，不阻塞界面
     LaunchedEffect(Unit) {
@@ -485,6 +496,7 @@ fun MainScreen(
     val skippedCount = trackedConversionTasks.count { it.state == ConversionTaskState.SKIPPED }
     val failCount = trackedConversionTasks.count { it.state == ConversionTaskState.FAILED }
     val totalBytes = files.sumOf { File(it.path).length() }
+    val selectedBytes = files.filter { it.selected }.sumOf { File(it.path).length() }
     val convertingCount = conversionTasks.count { it.state == ConversionTaskState.RUNNING }
     val pendingCount = files.count { it.selected && it.status == FileStatus.PENDING }
     val selectedCount = files.count { it.selected }
@@ -498,7 +510,31 @@ fun MainScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .dragAndDropTarget(
+                shouldStartDragAndDrop = { true },
+                target = remember {
+                    object : DragAndDropTarget {
+                        override fun onDrop(event: DragAndDropEvent): Boolean {
+                            val paths = event.filePaths()
+                            if (paths.isNotEmpty()) addPaths(files, paths)
+                            dropHot = false
+                            return true
+                        }
+
+                        override fun onEntered(event: DragAndDropEvent) {
+                            dropHot = true
+                        }
+
+                        override fun onExited(event: DragAndDropEvent) {
+                            dropHot = false
+                        }
+                    }
+                },
+            ),
+    ) {
     Row(Modifier.fillMaxSize().background(t.bg)) {
         AppSidebar(
             page = page,
@@ -565,10 +601,11 @@ fun MainScreen(
                 ) {
                     Column(
                         modifier = Modifier.weight(1f).fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        DropZone(
-                            files = files,
+                        DropSurface(
+                            hasFiles = files.isNotEmpty(),
+                            hot = dropHot,
                             onAddFiles = {
                                 val selected = FileDialogs.pickFiles("选择音乐文件", Formats.supportedExtensions())
                                 addPaths(files, selected.map { it.absolutePath })
@@ -576,6 +613,7 @@ fun MainScreen(
                             onAddFolder = {
                                 FileDialogs.pickFolder("选择文件夹")?.let { addPaths(files, listOf(it.absolutePath)) }
                             },
+                            modifier = if (files.isEmpty()) Modifier.weight(1f) else Modifier.height(UiMetrics.DropStrip),
                         )
                         QueueCard(
                             files = files,
@@ -585,6 +623,16 @@ fun MainScreen(
                             onClearSelection = { files.forEach { it.selected = false } },
                             onOpenImport = onOpenImport,
                             onRemove = { index -> if (!converting) files.removeAt(index) },
+                            onRetry = { index ->
+                                files.getOrNull(index)?.let { item ->
+                                    item.taskId?.let { conversionManager.retry(it) }
+                                    item.status = FileStatus.PENDING
+                                    item.message = null
+                                }
+                            },
+                            onOpenOutput = {
+                                runCatching { Desktop.getDesktop().open(File(settings.outputDir)) }
+                            },
                         )
                     }
 
@@ -604,24 +652,37 @@ fun MainScreen(
                             onUpdateSettings { it.copy(localExistingFilePolicy = value, skipExisting = value == DownloadExistingPolicy.SKIP) }
                         },
                         converting = converting,
-                        progress = progress,
-                        doneCount = doneCount,
-                        skippedCount = skippedCount,
-                        failCount = failCount,
-                        totalCount = selectedCount,
+                        itemCount = files.size,
+                        rawSize = humanSize(totalBytes),
                     )
                 }
 
                 // ---- 底部:状态 + 开始转换 ----
-                Footer(
+                ActionBar(
                     converting = converting,
                     convertingCount = convertingCount,
                     selectedCount = selectedCount,
-                    pendingCount = pendingCount,
+                    selectedSize = humanSize(selectedBytes),
+                    trackedCount = trackedConversionTasks.size,
+                    doneCount = doneCount,
+                    skippedCount = skippedCount,
+                    failCount = failCount,
+                    progress = progress,
+                    formatLabel = if (settings.outputFormat == OutputFormat.ORIGINAL) {
+                        "原始格式"
+                    } else {
+                        settings.outputFormat.displayName()
+                    },
+                    bitrateKbps = settings.bitrateKbps,
+                    usesBitrate = settings.outputFormat.usesBitrate,
+                    dedup = settings.dedup,
+                    policyLabel = settings.localExistingFilePolicy.localDisplayName(),
+                    formatCount = Formats.supportedExtensions().size,
                     enabled = !converting && selectedCount > 0,
+                    onOpenImport = onOpenImport,
                     onConvert = {
                         val chosen = files.filter { it.selected && it.path.isNotBlank() }
-                        if (chosen.isEmpty()) return@Footer
+                        if (chosen.isEmpty()) return@ActionBar
                         val ids = conversionManager.enqueueBatch(
                             inputPaths = chosen.map { it.path },
                             outputDir = settings.outputDir,
@@ -637,6 +698,12 @@ fun MainScreen(
                             item.status = FileStatus.PENDING
                             item.message = "已加入任务中心"
                         }
+                    },
+                    onPauseAll = { conversionManager.pauseAll() },
+                    onCancelAll = {
+                        trackedConversionTasks
+                            .filter { !it.isTerminal }
+                            .forEach { conversionManager.cancel(it.id) }
                     },
                 )
             } else if (page == 1) {
@@ -791,6 +858,7 @@ fun MainScreen(
         visible = miniPlayerVisible && playerState.current != null,
         onClose = { miniPlayerVisible = false },
     )
+    if (dropHot) DropScrim()
     }
 }
 
@@ -975,7 +1043,7 @@ private fun SidebarNavItem(
         modifier = Modifier
             .padding(horizontal = 12.dp, vertical = 2.dp)
             .fillMaxWidth()
-            .height(54.dp)
+            .height(48.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(background)
             .border(
@@ -1309,79 +1377,208 @@ private fun Pill(text: String, emphasize: Boolean) {
 // ============================================================
 
 @OptIn(ExperimentalFoundationApi::class)
+// ============================================================
+//  拖放区:空态引导大区 / 有内容 56dp 细条
+// ============================================================
+
+/** 空态引导大区与有内容细条共用同一套外观，投放目标注册在整窗（见 MainScreen）。 */
 @Composable
-private fun DropZone(files: SnapshotStateList<FileItem>, onAddFiles: () -> Unit, onAddFolder: () -> Unit) {
+private fun DropSurface(
+    hasFiles: Boolean,
+    hot: Boolean,
+    onAddFiles: () -> Unit,
+    onAddFolder: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val t = cleanTokens()
-    var hovering by remember { mutableStateOf(false) }
-    val borderColor = if (hovering) t.primary else t.dropBorder
+    val shape = RoundedCornerShape(16.dp)
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .height(214.dp)
-            .dashedBorder(color = borderColor, cornerRadius = 16.dp, strokeWidth = 1.8.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(t.surface)
-            .dragAndDropTarget(
-                shouldStartDragAndDrop = { true },
-                target = object : DragAndDropTarget {
-                    override fun onDrop(event: DragAndDropEvent): Boolean {
-                        val paths = event.filePaths()
-                        if (paths.isNotEmpty()) addPaths(files, paths)
-                        return true
-                    }
-
-                    override fun onEntered(event: DragAndDropEvent) {
-                        hovering = true
-                    }
-
-                    override fun onExited(event: DragAndDropEvent) {
-                        hovering = false
-                    }
-                },
+            .clip(shape)
+            .background(if (hot && hasFiles) t.primarySoft else t.surface)
+            .dashedBorder(
+                color = if (hot) t.primary else t.dropBorder,
+                cornerRadius = 16.dp,
+                strokeWidth = 1.8.dp,
             ),
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(
-                modifier = Modifier
-                    .size(52.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (hovering) t.primarySoft else t.surfaceSoft),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Outlined.LibraryMusic,
-                    contentDescription = null,
-                    tint = if (hovering) t.primary else t.textSecondary,
-                    modifier = Modifier.size(25.dp),
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "拖拽音乐文件 / 文件夹 到这里",
-                fontSize = 15.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = if (hovering) t.primary else t.text,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "NCM · QMC · MFLAC · MGG · KGM · KWM 等加密格式与 WAV · FLAC · APE · MP3 等原始格式，共 ${Formats.supportedExtensions().size} 种；自动识别真实音频并保留标签与封面",
-                fontSize = 12.5.sp,
-                color = t.textSecondary,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(15.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SoftButton(onClick = onAddFiles, text = "添加文件", icon = Icons.Outlined.Add)
-                SoftButton(onClick = onAddFolder, text = "添加文件夹", icon = Icons.Outlined.LibraryMusic)
-            }
+        if (hasFiles) {
+            DropStrip(hot = hot, onAddFiles = onAddFiles, onAddFolder = onAddFolder)
+        } else {
+            DropInvitation(hot = hot, onAddFiles = onAddFiles, onAddFolder = onAddFolder)
         }
     }
 }
 
+/** 空态:把空间给引导。 */
+@Composable
+private fun DropInvitation(hot: Boolean, onAddFiles: () -> Unit, onAddFolder: () -> Unit) {
+    val t = cleanTokens()
+    Column(
+        modifier = Modifier.padding(horizontal = 30.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(if (hot) t.primarySoft else t.surfaceSoft),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.LibraryMusic,
+                contentDescription = null,
+                tint = if (hot) t.primary else t.textSecondary,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+        Text(
+            "拖拽加密音乐文件 / 文件夹 到这里",
+            fontSize = 15.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (hot) t.primary else t.text,
+        )
+        Text(
+            "NCM · QMC · MFLAC · MGG · KGM · KWM 等加密格式与常见音频，共 " +
+                "${Formats.supportedExtensions().size} 种；自动识别真实音频并保留标签与封面",
+            modifier = Modifier.widthIn(max = 520.dp),
+            fontSize = 12.5.sp,
+            lineHeight = 20.sp,
+            color = t.textSecondary,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(5.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            SoftButton(onClick = onAddFiles, text = "添加文件", icon = Icons.Outlined.Add, large = true)
+            SoftButton(onClick = onAddFolder, text = "添加文件夹", icon = Icons.Outlined.LibraryMusic, large = true)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("也可以直接拖到窗口任意位置，或按 ", fontSize = 11.5.sp, color = t.textMuted)
+            KbdHint("⌘O")
+            Text(" 选择", fontSize = 11.5.sp, color = t.textMuted)
+        }
+    }
+}
+
+/** 有内容态:收成一条细带，把高度让给队列。 */
+@Composable
+private fun DropStrip(hot: Boolean, onAddFiles: () -> Unit, onAddFolder: () -> Unit) {
+    val t = cleanTokens()
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(if (hot) t.surface else t.surfaceSoft),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.LibraryMusic,
+                contentDescription = null,
+                tint = if (hot) t.primary else t.textSecondary,
+                modifier = Modifier.size(15.dp),
+            )
+        }
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "拖入更多文件 / 文件夹",
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (hot) t.primary else t.text,
+                maxLines = 1,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text("或按 ", fontSize = 12.sp, color = t.textSecondary, maxLines = 1)
+            KbdHint("⌘O")
+            Text(
+                " 选择",
+                modifier = Modifier.weight(1f, fill = false),
+                fontSize = 12.sp,
+                color = t.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        SoftButton(onClick = onAddFiles, text = "添加文件", icon = Icons.Outlined.Add)
+        SoftButton(onClick = onAddFolder, text = "添加文件夹", icon = Icons.Outlined.LibraryMusic)
+    }
+}
+
+/** 整窗拖入时的遮罩，明确「松手就加入队列」。 */
+@Composable
+private fun DropScrim() {
+    val t = cleanTokens()
+    Box(
+        modifier = Modifier.fillMaxSize().background(t.bg.copy(alpha = 0.88f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(t.primarySoft),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.Download,
+                    contentDescription = null,
+                    tint = t.primary,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+            Text("释放以添加到转换队列", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = t.text)
+            Text("自动识别格式与真实音频，保留标签与封面", fontSize = 12.5.sp, color = t.textSecondary)
+        }
+    }
+}
+
+@Composable
+private fun KbdHint(label: String) {
+    val t = cleanTokens()
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(t.surfaceSoft)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = t.textSecondary)
+    }
+}
+
 // ============================================================
-//  队列卡片
+//  转换队列
 // ============================================================
+
+private enum class QueueFilter(val label: String) {
+    ALL("全部"),
+    PENDING("处理中"),
+    DONE("已完成"),
+    FAILED("失败"),
+    OTHER("重复/跳过");
+
+    fun matches(status: FileStatus): Boolean = when (this) {
+        ALL -> true
+        PENDING -> status == FileStatus.PENDING || status == FileStatus.CONVERTING || status == FileStatus.PAUSED
+        DONE -> status == FileStatus.DONE
+        FAILED -> status == FileStatus.FAILED
+        OTHER -> status == FileStatus.DUPLICATE || status == FileStatus.SKIPPED || status == FileStatus.CANCELLED
+    }
+}
 
 @Composable
 private fun ColumnScope.QueueCard(
@@ -1392,10 +1589,19 @@ private fun ColumnScope.QueueCard(
     onClearSelection: () -> Unit,
     onOpenImport: () -> Unit,
     onRemove: (Int) -> Unit,
+    onRetry: (Int) -> Unit,
+    onOpenOutput: (Int) -> Unit,
 ) {
     val t = cleanTokens()
     val selectedCount = files.count { it.selected }
     val listState = rememberLazyListState()
+    var filter by remember { mutableStateOf(QueueFilter.ALL) }
+    var query by remember { mutableStateOf("") }
+    val showToolbar = files.size >= 8
+    val visible = files.withIndex().filter { (_, item) ->
+        filter.matches(item.status) && (query.isBlank() || item.name.contains(query, ignoreCase = true))
+    }
+
     Box(
         modifier = Modifier
             .weight(1f)
@@ -1406,18 +1612,13 @@ private fun ColumnScope.QueueCard(
     ) {
         Column(Modifier.fillMaxSize()) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 11.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    "转换队列",
-                    fontSize = 13.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = t.text,
-                )
+                Text("转换队列", fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = t.text)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    "已选 $selectedCount / ${files.size} 首",
+                    "本次会话 · 已选 $selectedCount / ${files.size} 首",
                     fontSize = 12.sp,
                     color = t.textMuted,
                 )
@@ -1441,41 +1642,76 @@ private fun ColumnScope.QueueCard(
                 )
             }
             Box(Modifier.fillMaxWidth().height(1.dp).background(t.rowDivider))
-            if (files.isEmpty()) {
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (showToolbar) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    QueueFilter.entries.forEach { entry ->
+                        QueueFilterChip(
+                            label = entry.label,
+                            count = files.count { entry.matches(it.status) },
+                            selected = filter == entry,
+                            onClick = { filter = entry },
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    QueueSearchField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier.widthIn(min = 120.dp),
+                    )
+                }
+                Box(Modifier.fillMaxWidth().height(1.dp).background(t.rowDivider))
+            }
+            when {
+                files.isEmpty() -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(9.dp),
+                    ) {
                         Icon(
                             Icons.Outlined.LibraryMusic,
                             contentDescription = null,
-                            tint = t.textMuted.copy(alpha = 0.55f),
-                            modifier = Modifier.size(36.dp),
+                            tint = t.textMuted.copy(alpha = 0.45f),
+                            modifier = Modifier.size(32.dp),
                         )
-                        Spacer(Modifier.height(10.dp))
                         Text(
-                            "还没有添加文件\n拖拽或点击上方区域选择音乐文件",
+                            "队列为空",
                             fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
                             color = t.textSecondary,
-                            textAlign = TextAlign.Center,
-                            lineHeight = 20.sp,
                         )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("拖入文件或按 ", fontSize = 12.5.sp, color = t.textMuted)
+                            KbdHint("⌘O")
+                            Text(" 选择", fontSize = 12.5.sp, color = t.textMuted)
+                        }
                     }
                 }
-            } else {
-                Box(Modifier.weight(1f).fillMaxWidth()) {
+                visible.isEmpty() -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("没有匹配的文件", fontSize = 13.sp, color = t.textSecondary)
+                }
+                else -> Box(Modifier.weight(1f).fillMaxWidth()) {
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 6.dp),
+                        contentPadding = PaddingValues(vertical = 4.dp),
                     ) {
-                        itemsIndexed(files) { index, item ->
+                        itemsIndexed(visible) { position, entry ->
+                            val index = entry.index
+                            val item = entry.value
                             Column {
                                 FileRow(
                                     item = item,
                                     converting = converting,
                                     onToggleSelected = { onToggleSelected(index) },
                                     onRemove = { onRemove(index) },
+                                    onRetry = { onRetry(index) },
+                                    onOpenOutput = { onOpenOutput(index) },
                                 )
-                                if (index < files.lastIndex) {
+                                if (position < visible.lastIndex) {
                                     Box(Modifier.fillMaxWidth().height(UiMetrics.Hairline).background(t.rowDivider))
                                 }
                             }
@@ -1491,6 +1727,69 @@ private fun ColumnScope.QueueCard(
     }
 }
 
+@Composable
+private fun QueueFilterChip(label: String, count: Int, selected: Boolean, onClick: () -> Unit) {
+    val t = cleanTokens()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val empty = count == 0
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(UiMetrics.CardRadius))
+            .background(if (selected) t.primarySoft else if (hovered) t.surfaceSoft else t.surfaceSoft.copy(alpha = 0.6f))
+            .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 5.dp)
+            .alpha(if (empty && !selected) 0.45f else 1f),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) t.primary else t.textSecondary,
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            count.toString(),
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) t.primary.copy(alpha = 0.75f) else t.textSecondary.copy(alpha = 0.75f),
+        )
+    }
+}
+
+@Composable
+private fun QueueSearchField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
+    val t = cleanTokens()
+    Row(
+        modifier = modifier
+            .height(28.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(t.surface)
+            .border(1.dp, t.border, RoundedCornerShape(8.dp))
+            .padding(horizontal = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(Icons.Outlined.Search, contentDescription = null, tint = t.textMuted, modifier = Modifier.size(13.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            if (value.isEmpty()) {
+                Text("搜索文件名…", fontSize = 12.sp, color = t.textMuted, maxLines = 1)
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = TextStyle(fontSize = 12.sp, color = t.text),
+                cursorBrush = SolidColor(t.primary),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
 // ============================================================
 //  文件行
 // ============================================================
@@ -1501,70 +1800,112 @@ private fun FileRow(
     converting: Boolean,
     onToggleSelected: () -> Unit,
     onRemove: () -> Unit,
+    onRetry: () -> Unit,
+    onOpenOutput: () -> Unit,
 ) {
     val t = cleanTokens()
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val ext = item.name.substringAfterLast('.', "").lowercase(Locale.ROOT)
-    Row(
+    val failed = item.status == FileStatus.FAILED
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(if (!converting && hovered) t.surfaceSoft.copy(alpha = 0.62f) else Color.Transparent)
-            .hoverable(interaction, enabled = !converting)
-            .pointerHoverIcon(if (converting) PointerIcon.Default else PointerIcon.Hand)
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                enabled = !converting,
-                onClick = onToggleSelected,
-            )
-            .padding(horizontal = 18.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .background(if (!converting && hovered) t.surfaceSoft.copy(alpha = 0.62f) else Color.Transparent),
     ) {
-        QueueCheckbox(checked = item.selected, enabled = !converting, onToggle = onToggleSelected)
-        ExtBadge(ext = ext)
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                item.name,
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.Medium,
-                color = t.text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (item.message != null) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(UiMetrics.QueueRow)
+                .hoverable(interaction, enabled = !converting)
+                .pointerHoverIcon(if (converting) PointerIcon.Default else PointerIcon.Hand)
+                .clickable(
+                    interactionSource = interaction,
+                    indication = null,
+                    enabled = !converting,
+                    onClick = onToggleSelected,
+                )
+                .padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(11.dp),
+        ) {
+            QueueCheckbox(checked = item.selected, enabled = !converting, onToggle = onToggleSelected)
+            ExtBadge(ext = ext)
+            Column(Modifier.weight(1f)) {
                 Text(
-                    item.message.orEmpty(),
+                    item.name,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = t.text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    if (failed) item.message.orEmpty() else extFamilyLabel(ext),
                     fontSize = 11.5.sp,
-                    color = t.error,
+                    color = if (failed) t.error else t.textMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            if (item.status == FileStatus.CONVERTING) {
+                IndeterminateGradientProgress(modifier = Modifier.width(104.dp).height(8.dp))
+            } else {
+                Text(
+                    humanSize(File(item.path).length()),
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = t.textMuted,
+                )
+            }
+            if (item.status != FileStatus.PENDING) StatusChip(item.status)
+            Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+                if (hovered && !converting) {
+                    AppIconButton(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "移除",
+                        onClick = onRemove,
+                        danger = true,
+                        size = 28.dp,
+                    )
+                }
+            }
         }
-        Text(
-            humanSize(File(item.path).length()),
-            fontSize = 12.sp,
-            fontFamily = FontFamily.Monospace,
-            color = t.textMuted,
-        )
-        if (item.status == FileStatus.CONVERTING) {
-            Spacer(Modifier.width(6.dp))
-            IndeterminateGradientProgress(
-                modifier = Modifier.width(130.dp).height(8.dp),
+        if (failed) {
+            FailBar(
+                message = item.message,
+                onRetry = onRetry,
+                onOpenOutput = onOpenOutput,
             )
         }
-        Spacer(Modifier.width(4.dp))
-        StatusChip(item.status)
-        Spacer(Modifier.width(2.dp))
-        AppIconButton(
-            icon = Icons.Outlined.Close,
-            contentDescription = "移除",
-            onClick = onRemove,
-            enabled = !converting,
-            danger = true,
+    }
+}
+
+/** 失败行的行内处理条:就地重试或打开输出目录,不必跳到任务中心。 */
+@Composable
+private fun FailBar(message: String?, onRetry: () -> Unit, onOpenOutput: () -> Unit) {
+    val t = cleanTokens()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 46.dp, end = 18.dp, bottom = 9.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(t.errorSoft)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            message?.takeIf { it.isNotBlank() } ?: "转换失败",
+            modifier = Modifier.weight(1f),
+            fontSize = 12.sp,
+            color = t.error,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
+        AppTextAction(text = "重试", onClick = onRetry, danger = true)
+        AppTextAction(text = "打开输出目录", onClick = onOpenOutput, danger = true)
     }
 }
 
@@ -1580,24 +1921,50 @@ private fun ExtBadge(ext: String) {
     }
     Box(
         modifier = Modifier
-            .width(66.dp)
-            .height(30.dp)
+            .height(UiMetrics.BadgeHeight)
+            .widthIn(min = UiMetrics.BadgeMinWidth, max = UiMetrics.BadgeMaxWidth)
             .clip(RoundedCornerShape(8.dp))
-            .background(bg),
+            .background(bg)
+            .padding(horizontal = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            ext.uppercase(Locale.ROOT),
-            modifier = Modifier.fillMaxSize().wrapContentSize(Alignment.Center),
+            extBadgeLabel(ext),
             textAlign = TextAlign.Center,
             fontSize = 10.5.sp,
-            lineHeight = 10.5.sp,
+            lineHeight = 12.sp,
             fontWeight = FontWeight.Bold,
-            letterSpacing = 0.5.sp,
+            letterSpacing = 0.4.sp,
             fontFamily = FontFamily.Monospace,
             color = fg,
+            maxLines = 1,
         )
     }
+}
+
+/**
+ * 格式徽章文案。QQ 音乐家族的扩展名很长（qmcflac / bkcm4a / mflac0），
+ * 拆成「家族·子型」两段后可以在不压扁字距的前提下完整可读。
+ */
+private fun extBadgeLabel(ext: String): String {
+    if (ext.isEmpty()) return "—"
+    val families = listOf("mflac", "qmc", "mgg", "bkc", "tkm", "mmp4")
+    for (family in families) {
+        if (ext.startsWith(family) && ext.length > family.length) {
+            return "${family.uppercase(Locale.ROOT)}·${ext.removePrefix(family).uppercase(Locale.ROOT)}"
+        }
+    }
+    return ext.uppercase(Locale.ROOT)
+}
+
+/** 行内副标题:说明这个文件属于哪一类容器,或原始音频将重新写入标签。 */
+private fun extFamilyLabel(ext: String): String = when {
+    ext == "ncm" -> "网易云加密容器"
+    ext == "kgm" || ext == "kgma" || ext == "vpr" -> "酷狗加密容器"
+    ext == "kwm" -> "酷我加密容器"
+    Formats.isPlainExtension(ext) -> "原始格式 · 仅重新写入标签"
+    ext.isEmpty() -> "未知扩展名"
+    else -> "QQ 音乐加密容器"
 }
 
 @Composable
@@ -1607,7 +1974,7 @@ private fun StatusChip(status: FileStatus) {
         FileStatus.PENDING -> Triple("等待中", t.waitBg, t.waitFg)
         FileStatus.CONVERTING -> Triple("转换中", t.primarySoft, t.primary)
         FileStatus.DONE -> Triple("已完成", t.successSoft, t.success)
-        FileStatus.SKIPPED -> Triple("已跳过", t.waitBg, t.waitFg)
+        FileStatus.SKIPPED -> Triple("跳过", t.waitBg, t.waitFg)
         FileStatus.FAILED -> Triple("失败", t.errorSoft, t.error)
         FileStatus.DUPLICATE -> Triple("重复", t.dupBg, t.dupFg)
         FileStatus.PAUSED -> Triple("已暂停", t.waitBg, t.waitFg)
@@ -1632,9 +1999,10 @@ private fun StatusChip(status: FileStatus) {
 }
 
 // ============================================================
-//  右侧栏
+//  右侧栏:常用三项常驻,偏好收进「更多设置」
 // ============================================================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Rail(
     outputDir: String,
@@ -1650,150 +2018,197 @@ private fun Rail(
     existingFilePolicy: DownloadExistingPolicy,
     onExistingFilePolicyChange: (DownloadExistingPolicy) -> Unit,
     converting: Boolean,
-    progress: Float,
-    doneCount: Int,
-    skippedCount: Int,
-    failCount: Int,
-    totalCount: Int,
+    itemCount: Int,
+    rawSize: String,
 ) {
     val t = cleanTokens()
     val scrollState = rememberScrollState()
     Box(modifier = Modifier.width(300.dp).fillMaxHeight()) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(end = 8.dp).verticalScroll(scrollState),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        RailLabel("输出目录")
-        Field(
-            path = outputDir,
-            actions = listOf(
-                "浏览…" to {
-                    FileDialogs.pickFolder("选择输出目录")?.let { onOutputDirChange(it.absolutePath) }
-                },
-                "打开" to {
-                    runCatching { Desktop.getDesktop().open(File(outputDir)) }
-                },
-            ),
-        )
-        RailLabel("选项")
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(11.dp),
+        Column(
+            modifier = Modifier.fillMaxSize().padding(end = 8.dp).verticalScroll(scrollState),
+            verticalArrangement = Arrangement.spacedBy(13.dp),
         ) {
-            CleanSwitch(
-                checked = dedup,
+            RailLabel("输出目录")
+            Field(
+                path = outputDir,
+                actions = listOf(
+                    "浏览…" to {
+                        FileDialogs.pickFolder("选择输出目录")?.let { onOutputDirChange(it.absolutePath) }
+                    },
+                    "打开" to {
+                        runCatching { Desktop.getDesktop().open(File(outputDir)) }
+                    },
+                ),
+            )
+            RailLabel("输出格式")
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutputFormat.entries.forEach { format ->
+                    ChoiceChip(
+                        text = if (format == OutputFormat.ORIGINAL) "原始格式" else format.displayName(),
+                        selected = outputFormat == format,
+                        enabled = !converting,
+                        onClick = { onOutputFormatChange(format) },
+                    )
+                }
+            }
+            if (outputFormat.usesBitrate) {
+                RailLabel("码率")
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    outputBitrates.forEach { value ->
+                        ChoiceChip(
+                            text = "${value}k",
+                            selected = bitrateKbps == value,
+                            enabled = !converting,
+                            onClick = { onBitrateChange(value) },
+                        )
+                    }
+                }
+            }
+            RailLabel("更多设置")
+            MoreSettingsCard(
+                dedup = dedup,
+                onDedupChange = onDedupChange,
+                policy = existingFilePolicy,
+                onPolicyChange = onExistingFilePolicyChange,
+                template = outputTemplate,
+                onTemplateChange = onOutputTemplateChange,
                 enabled = !converting,
-                onChange = onDedupChange,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "输出到 ${File(outputDir).name.ifBlank { outputDir }}",
+                fontSize = 11.5.sp,
+                lineHeight = 17.sp,
+                color = t.textMuted,
             )
             Text(
-                "按解密后音频内容去重",
-                fontSize = 13.5.sp,
-                color = t.text,
+                when {
+                    converting -> "转换中，会改变结果的设置已锁定"
+                    itemCount > 0 -> "预计占用 约 $rawSize"
+                    else -> "支持 ${Formats.supportedExtensions().size} 种加密与原始音频格式"
+                },
+                fontSize = 11.5.sp,
+                lineHeight = 17.sp,
+                color = t.textMuted,
             )
         }
-        Spacer(Modifier.height(10.dp))
-        RailLabel("同名文件")
-        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            listOf(
-                DownloadExistingPolicy.SKIP,
-                DownloadExistingPolicy.RENAME,
-                DownloadExistingPolicy.OVERWRITE,
-            ).chunked(3).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { policy ->
-                        ChoiceChip(
-                            text = policy.localDisplayName(),
-                            selected = existingFilePolicy == policy,
-                            enabled = !converting,
-                            onClick = { onExistingFilePolicyChange(policy) },
-                        )
+        AppVerticalScrollbar(
+            state = scrollState,
+            modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
+        )
+    }
+}
+
+/** 「更多设置」折叠卡:去重、同名策略与命名模板都是设一次就不动的偏好。 */
+@Composable
+private fun MoreSettingsCard(
+    dedup: Boolean,
+    onDedupChange: (Boolean) -> Unit,
+    policy: DownloadExistingPolicy,
+    onPolicyChange: (DownloadExistingPolicy) -> Unit,
+    template: String,
+    onTemplateChange: (String) -> Unit,
+    enabled: Boolean,
+) {
+    val t = cleanTokens()
+    var open by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (hovered && !open) t.surfaceSoft.copy(alpha = 0.5f) else t.surface)
+            .border(1.dp, t.cardBorder, RoundedCornerShape(12.dp))
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .hoverable(interaction)
+                .pointerHoverIcon(PointerIcon.Hand)
+                .clickable(interactionSource = interaction, indication = null) { open = !open },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (open) "▾" else "▸",
+                fontSize = 11.sp,
+                color = t.textSecondary,
+            )
+            Spacer(Modifier.width(7.dp))
+            Text("去重 · 同名策略 · 命名模板", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = t.text)
+            Spacer(Modifier.weight(1f))
+            Text("跟随默认", fontSize = 11.5.sp, color = t.textMuted)
+        }
+        if (open) {
+            Spacer(Modifier.height(11.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(11.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(11.dp),
+                ) {
+                    CleanSwitch(checked = dedup, enabled = enabled, onChange = onDedupChange)
+                    Text("按解密后音频内容去重", fontSize = 12.5.sp, color = t.text)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("同名文件", fontSize = 11.5.sp, color = t.textMuted)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(
+                            DownloadExistingPolicy.SKIP,
+                            DownloadExistingPolicy.RENAME,
+                            DownloadExistingPolicy.OVERWRITE,
+                        ).forEach { item ->
+                            ChoiceChip(
+                                text = item.localDisplayName(),
+                                selected = policy == item,
+                                enabled = enabled,
+                                onClick = { onPolicyChange(item) },
+                            )
+                        }
                     }
                 }
-            }
-        }
-        RailLabel("输出格式")
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutputFormat.entries.chunked(3).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { format ->
-                        ChoiceChip(
-                            text = format.displayName(),
-                            selected = outputFormat == format,
-                            enabled = !converting,
-                            onClick = { onOutputFormatChange(format) },
-                        )
-                    }
-                }
-            }
-        }
-        if (outputFormat.usesBitrate) {
-            RailLabel("码率")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                outputBitrates.forEach { value ->
-                    ChoiceChip(
-                        text = "${value}k",
-                        selected = bitrateKbps == value,
-                        enabled = !converting,
-                        onClick = { onBitrateChange(value) },
-                    )
-                }
-            }
-        }
-        RailLabel("本地命名模板")
-        OutlinedTextField(
-            value = outputTemplate,
-            onValueChange = onOutputTemplateChange,
-            enabled = !converting,
-            singleLine = true,
-            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.5.sp, color = t.text),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = t.surfaceSoft,
-                unfocusedContainerColor = t.surfaceSoft,
-                focusedIndicatorColor = t.primary,
-                unfocusedIndicatorColor = t.border,
-            ),
-            shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.fillMaxWidth().height(46.dp),
-        )
-        Text(
-            "{title} · {artist} · {album} · {track:02} · {year} · {platform}",
-            fontSize = 10.5.sp,
-            lineHeight = 15.sp,
-            color = t.textMuted,
-        )
-        RailLabel("进度")
-        if (totalCount > 0) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                GradientProgress(
-                    modifier = Modifier.fillMaxWidth().height(10.dp),
-                    progress = progress,
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(
-                        "完成 $doneCount · 跳过 $skippedCount · 失败 $failCount",
-                        fontSize = 12.5.sp,
-                        color = t.textSecondary,
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("本地命名模板", fontSize = 11.5.sp, color = t.textMuted)
+                    OutlinedTextField(
+                        value = template,
+                        onValueChange = onTemplateChange,
+                        enabled = enabled,
+                        singleLine = true,
+                        textStyle = TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = t.text),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = t.surfaceSoft,
+                            unfocusedContainerColor = t.surfaceSoft,
+                            focusedIndicatorColor = t.primary,
+                            unfocusedIndicatorColor = t.border,
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().height(42.dp),
                     )
                     Text(
-                        "${(progress * 100).toInt()}%",
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = t.text,
+                        "{title} · {artist} · {album} · {track:02} · {year}",
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp,
+                        color = t.textMuted,
                     )
                 }
             }
         } else {
+            Spacer(Modifier.height(6.dp))
             Text(
-                "添加文件后开始转换",
-                fontSize = 12.5.sp,
+                "${if (dedup) "去重开启" else "去重关闭"} · 同名文件${policy.localDisplayName()} · 模板 $template",
+                fontSize = 11.5.sp,
+                lineHeight = 17.sp,
                 color = t.textMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-    }
-    AppVerticalScrollbar(
-        state = scrollState,
-        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
-    )
     }
 }
 
@@ -1825,83 +2240,196 @@ private fun Field(path: String, actions: List<Pair<String, () -> Unit>>) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(44.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(t.surface)
             .border(1.dp, t.border, RoundedCornerShape(12.dp))
-            .padding(horizontal = 14.dp, vertical = 11.dp),
+            .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            path,
+            displayPath(path),
             modifier = Modifier.weight(1f),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
+            fontSize = 12.sp,
+            fontFamily = FontFamily.Monospace,
             color = t.text,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(8.dp))
         actions.forEach { (label, action) ->
             ActionPill(label = label, onClick = action)
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(4.dp))
         }
     }
 }
 
-/** 小灰胶囊动作钮(浏览…/打开), 对应设计稿 .mini2。 */
+/** 小灰胶囊动作钮(浏览…/打开), 对应设计稿 .mini。 */
 @Composable
 private fun ActionPill(label: String, onClick: () -> Unit) {
     AppTextAction(text = label, onClick = onClick)
 }
 
 // ============================================================
-//  底部
+//  吸底操作条:唯一主按钮
 // ============================================================
 
 @Composable
-private fun Footer(
+private fun ActionBar(
     converting: Boolean,
     convertingCount: Int,
     selectedCount: Int,
-    pendingCount: Int,
+    selectedSize: String,
+    trackedCount: Int,
+    doneCount: Int,
+    skippedCount: Int,
+    failCount: Int,
+    progress: Float,
+    formatLabel: String,
+    bitrateKbps: Int,
+    usesBitrate: Boolean,
+    dedup: Boolean,
+    policyLabel: String,
+    formatCount: Int,
     enabled: Boolean,
+    onOpenImport: () -> Unit,
     onConvert: () -> Unit,
+    onPauseAll: () -> Unit,
+    onCancelAll: () -> Unit,
 ) {
     val t = cleanTokens()
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(UiMetrics.ActionBar)
+            .clip(RoundedCornerShape(UiMetrics.CardRadius))
+            .background(t.surface)
+            .border(1.dp, t.cardBorder, RoundedCornerShape(UiMetrics.CardRadius))
+            .padding(horizontal = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(
-            if (converting) "转换中 $convertingCount 首 · 已选 $selectedCount 首"
-            else if (pendingCount > 0) "已选 $selectedCount 首 · 待处理 $pendingCount 首"
-            else if (selectedCount > 0) "已选 $selectedCount 首"
-            else "勾选要转换的文件后开始",
-            fontSize = 13.sp,
-            color = t.textSecondary,
-        )
-        Spacer(Modifier.weight(1f))
-        Button(
-            onClick = onConvert,
-            enabled = enabled,
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = t.primary,
-                contentColor = t.onPrimary,
-                disabledContainerColor = t.surfaceSoft,
-                disabledContentColor = t.textMuted,
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp, pressedElevation = 2.dp),
-            modifier = Modifier
-                .height(48.dp)
-                .shadow(6.dp, RoundedCornerShape(12.dp), spotColor = t.primary.copy(alpha = 0.30f), ambientColor = t.primary.copy(alpha = 0.22f)),
-        ) {
-            Text(
-                if (converting) "转换中…" else "开始转换",
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
+        if (converting) {
+            GradientProgress(
+                modifier = Modifier.width(220.dp).height(10.dp),
+                progress = progress,
+            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "${doneCount + skippedCount + failCount} / $trackedCount 已完成 · ${(progress * 100).toInt()}%",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = t.text,
+                )
+                Text(
+                    "完成 $doneCount · 跳过 $skippedCount · 失败 $failCount · $convertingCount 首正在转换",
+                    fontSize = 11.5.sp,
+                    color = t.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            GhostButton(text = "暂停全部", icon = Icons.Outlined.Pause, onClick = onPauseAll)
+            GhostButton(text = "取消", icon = Icons.Outlined.Close, onClick = onCancelAll)
+        } else {
+            Column(Modifier.weight(1f)) {
+                if (selectedCount > 0) {
+                    Text(
+                        "已选 $selectedCount 首 · $selectedSize",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = t.text,
+                    )
+                    Text(
+                        buildString {
+                            append(formatLabel)
+                            if (usesBitrate) append(" · ${bitrateKbps}k")
+                            append(if (dedup) " · 按内容去重" else " · 不去重")
+                            append(" · 同名文件$policyLabel")
+                        },
+                        fontSize = 11.5.sp,
+                        color = t.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    Text("添加文件后开始转换", fontSize = 12.5.sp, color = t.textMuted)
+                    Text(
+                        "支持 $formatCount 种加密与原始音频格式",
+                        fontSize = 11.5.sp,
+                        color = t.textMuted,
+                    )
+                }
+            }
+            GhostButton(
+                text = "歌单导入",
+                icon = Icons.AutoMirrored.Outlined.PlaylistAdd,
+                onClick = onOpenImport,
+            )
+            CtaButton(
+                text = if (selectedCount > 0) "开始转换 $selectedCount" else "开始转换",
+                enabled = enabled,
+                onClick = onConvert,
             )
         }
+    }
+}
+
+/** 唯一的主按钮:整屏只有它会发光。 */
+@Composable
+private fun CtaButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+    val t = cleanTokens()
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = t.primary,
+            contentColor = t.onPrimary,
+            disabledContainerColor = t.surfaceSoft,
+            disabledContentColor = t.textMuted,
+        ),
+        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
+        contentPadding = PaddingValues(horizontal = 26.dp),
+        modifier = Modifier
+            .height(UiMetrics.PrimaryHeight)
+            .then(
+                if (enabled) {
+                    Modifier.shadow(
+                        6.dp,
+                        RoundedCornerShape(12.dp),
+                        spotColor = t.primary.copy(alpha = 0.30f),
+                        ambientColor = t.primary.copy(alpha = 0.22f),
+                    )
+                } else {
+                    Modifier
+                },
+            ),
+    ) {
+        Text(text, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun GhostButton(text: String, icon: ImageVector, onClick: () -> Unit) {
+    val t = cleanTokens()
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Row(
+        modifier = Modifier
+            .height(38.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (hovered) t.surfaceSoft else t.surface)
+            .border(1.dp, t.border, RoundedCornerShape(10.dp))
+            .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = t.textSecondary, modifier = Modifier.size(14.dp))
+        Text(text, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = t.text)
     }
 }
 
@@ -1910,14 +2438,14 @@ private fun Footer(
 // ============================================================
 
 @Composable
-private fun SoftButton(onClick: () -> Unit, text: String, icon: ImageVector) {
+private fun SoftButton(onClick: () -> Unit, text: String, icon: ImageVector, large: Boolean = false) {
     val t = cleanTokens()
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val focused by interaction.collectIsFocusedAsState()
     Row(
         modifier = Modifier
-            .height(UiMetrics.ControlHeight)
+            .height(if (large) 36.dp else 30.dp)
             .clip(RoundedCornerShape(UiMetrics.ControlRadius))
             .background(if (hovered) t.surfaceSoft else t.surface)
             .border(
@@ -1928,12 +2456,22 @@ private fun SoftButton(onClick: () -> Unit, text: String, icon: ImageVector) {
             .hoverable(interaction)
             .pointerHoverIcon(PointerIcon.Hand)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 15.dp),
+            .padding(horizontal = if (large) 15.dp else 11.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        Icon(icon, contentDescription = null, tint = if (hovered) t.text else t.textSecondary, modifier = Modifier.size(15.dp))
-        Text(text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = t.text)
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (hovered) t.text else t.textSecondary,
+            modifier = Modifier.size(14.dp),
+        )
+        Text(
+            text,
+            fontSize = if (large) 12.5.sp else 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = t.text,
+        )
     }
 }
 
@@ -1950,7 +2488,7 @@ private fun GradientProgress(modifier: Modifier, progress: Float) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(5.dp))
-            .background(t.surfaceSoft),
+            .background(t.track),
     ) {
         Box(
             modifier = Modifier
@@ -1976,7 +2514,7 @@ private fun IndeterminateGradientProgress(modifier: Modifier) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
-            .background(t.surfaceSoft),
+            .background(t.track),
     ) {
         Box(
             modifier = Modifier
@@ -1988,7 +2526,6 @@ private fun IndeterminateGradientProgress(modifier: Modifier) {
     }
 }
 
-/** 队列勾选框:18dp 圆角方块,勾选后填充品牌橙。 */
 @Composable
 private fun QueueCheckbox(checked: Boolean, enabled: Boolean, onToggle: () -> Unit) {
     val t = cleanTokens()
@@ -2316,6 +2853,16 @@ private fun Modifier.dashedBorder(
 // ============================================================
 //  工具函数
 // ============================================================
+
+/** 把家目录前缀缩写成 `~`，让输出目录在 300dp 的右栏里完整可读。 */
+private fun displayPath(path: String): String {
+    val home = System.getProperty("user.home") ?: return path
+    return when {
+        path == home -> "~"
+        path.startsWith("$home/") -> "~" + path.removePrefix(home)
+        else -> path
+    }
+}
 
 private fun humanSize(bytes: Long): String = when {
     bytes >= 1L shl 30 -> String.format(Locale.ROOT, "%.1f GB", bytes / (1L shl 30).toDouble())
