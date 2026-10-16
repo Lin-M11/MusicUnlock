@@ -59,6 +59,20 @@ internal object UiMetrics {
     val RowIconSize = 16.dp
     val HeaderIconSize = 18.dp
     val Hairline = 1.dp
+
+    /** 有内容态的拖放条高度(空态拖放区由布局自行撑开)。 */
+    val DropStrip = 56.dp
+    /** 转换队列行高。 */
+    val QueueRow = 52.dp
+    /** 队列筛选与搜索工具栏高度。 */
+    val QueueToolbar = 40.dp
+    /** 吸底操作条高度。 */
+    val ActionBar = 64.dp
+
+    /** 格式徽章: 宽度按内容自适应, 并设上下限。 */
+    val BadgeHeight = 28.dp
+    val BadgeMinWidth = 46.dp
+    val BadgeMaxWidth = 84.dp
 }
 
 /** Icon-only control with a consistent hit target, hover state, focus ring, and tooltip. */
@@ -85,7 +99,7 @@ internal fun AppIconButton(
         else -> Color.Transparent
     }
     val tint = when {
-        !enabled -> t.textMuted.copy(alpha = 0.42f)
+        !enabled -> t.textMuted.copy(alpha = 0.55f)
         primary -> t.onPrimary
         danger && hovered -> t.error
         hovered -> t.text

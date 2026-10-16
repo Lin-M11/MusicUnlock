@@ -34,6 +34,8 @@ object MusicUnlockColors {
     val LightWaitBg = Color(0xFFF4F4F7)
     val LightDupFg = Color(0xFF71717A)
     val LightDupBg = Color(0xFFF4F4F7)
+    val LightPrimaryHover = Color(0xFFD24D09)
+    val LightTrack = Color(0xFFEDEDF2)
 
     // 格式徽章
     val LightNcmBg = Color(0xFFFEF0E6); val LightNcmFg = Color(0xFFC2410C)
@@ -64,6 +66,8 @@ object MusicUnlockColors {
     val DarkWaitBg = Color(0xFF26262B)
     val DarkDupFg = Color(0xFF8A8A95)
     val DarkDupBg = Color(0xFF26262B)
+    val DarkPrimaryHover = Color(0xFFFDBA74)
+    val DarkTrack = Color(0xFF2E2E34)
 
     val DarkNcmBg = Color(0xFF3A2415); val DarkNcmFg = Color(0xFFFDBA74)
     val DarkQmcBg = Color(0xFF22204A); val DarkQmcFg = Color(0xFFA5B4FC)
@@ -108,6 +112,10 @@ internal data class CleanTokens(
     val dropBorder: Color,
     val cardBorder: Color,
     val rowDivider: Color,
+    /** 进度条与滑轨底色(比 surfaceSoft 略深, 保证空槽可辨)。 */
+    val track: Color,
+    /** 主按钮悬停态(比主色略深, 深色模式下更亮)。 */
+    val primaryHover: Color,
 )
 
 @Composable
@@ -146,6 +154,8 @@ internal fun cleanTokens(): CleanTokens {
             dropBorder = MusicUnlockColors.LightDropBorder,
             cardBorder = MusicUnlockColors.LightCardBorder,
             rowDivider = MusicUnlockColors.LightRowDivider,
+            track = MusicUnlockColors.LightTrack,
+            primaryHover = MusicUnlockColors.LightPrimaryHover,
         )
     } else {
         CleanTokens(
@@ -180,6 +190,8 @@ internal fun cleanTokens(): CleanTokens {
             dropBorder = MusicUnlockColors.DarkDropBorder,
             cardBorder = MusicUnlockColors.DarkCardBorder,
             rowDivider = MusicUnlockColors.DarkRowDivider,
+            track = MusicUnlockColors.DarkTrack,
+            primaryHover = MusicUnlockColors.DarkPrimaryHover,
         )
     }
 }
