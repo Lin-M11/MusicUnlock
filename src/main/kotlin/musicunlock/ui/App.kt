@@ -449,9 +449,10 @@ fun MainScreen(
     crossPlatformMatcher: CrossPlatformMatcher,
     library: LibraryIndex,
     onOpenImport: () -> Unit,
+    initialPage: Int = 0,
 ) {
     val scope = rememberCoroutineScope()
-    var page by remember { mutableStateOf(0) }
+    var page by remember { mutableStateOf(initialPage) }
     var playerOverlay by remember { mutableStateOf<PlayerOverlay?>(null) }
     var miniPlayerVisible by remember { mutableStateOf(false) }
     var update by remember { mutableStateOf<ReleaseInfo?>(null) }

@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -56,6 +59,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -699,24 +704,38 @@ private fun OutlineAction(text: String, enabled: Boolean = true, onClick: () -> 
     AppTextAction(text = text, onClick = onClick, enabled = enabled, outlined = true)
 }
 
+/** 工具条里的紧凑输入框：自绘外观，高度完全由本组件决定，占位文字与输入文字都在 46dp 内居中。 */
 @Composable
 private fun SmallTextField(value: String, placeholder: String, modifier: Modifier, onValueChange: (String) -> Unit) {
     val t = cleanTokens()
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        placeholder = { Text(placeholder, fontSize = 12.sp, color = t.textMuted) },
-        singleLine = true,
-        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.5.sp, color = t.text),
-        colors = TextFieldDefaults.colors(
-            focusedContainerColor = t.surfaceSoft,
-            unfocusedContainerColor = t.surfaceSoft,
-            focusedIndicatorColor = t.primary,
-            unfocusedIndicatorColor = t.border,
-        ),
-        shape = RoundedCornerShape(UiMetrics.ControlRadius),
-        modifier = modifier.height(46.dp),
-    )
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Box(
+        modifier = modifier
+            .height(46.dp)
+            .clip(RoundedCornerShape(UiMetrics.ControlRadius))
+            .background(t.surfaceSoft)
+            .border(
+                1.dp,
+                if (focused) t.primary else t.border,
+                RoundedCornerShape(UiMetrics.ControlRadius),
+            )
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        if (value.isEmpty()) {
+            Text(placeholder, fontSize = 12.5.sp, color = t.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            interactionSource = interaction,
+            textStyle = TextStyle(fontSize = 12.5.sp, color = t.text),
+            cursorBrush = SolidColor(t.primary),
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
 }
 
 @Composable
