@@ -83,6 +83,7 @@ internal fun SettingsPage(
     library: LibraryIndex,
     conversionManager: ConversionTaskManager,
     downloadManager: DownloadTaskManager,
+    onShowReset: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val t = cleanTokens()
@@ -568,6 +569,22 @@ internal fun SettingsPage(
                 }
                 Text(status, fontSize = 12.sp, color = t.textSecondary, modifier = Modifier.padding(top = 8.dp))
             }
+
+            SettingsCard("危险区", danger = true) {
+                Text(
+                    "恢复默认会清空输出目录、转码偏好、窗口大小以及全部平台的登录状态，执行前会再次确认。",
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    color = t.textSecondary,
+                )
+                SettingsSpacer()
+                AppTextAction(
+                    text = "恢复默认设置",
+                    onClick = onShowReset,
+                    danger = true,
+                    outlined = true,
+                )
+            }
         }
         }
         AppVerticalScrollbar(state = scroll, modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 4.dp))
@@ -687,17 +704,26 @@ private fun SyncResultOverlay(result: SyncResult, onClose: () -> Unit) {
 }
 
 @Composable
-private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+private fun SettingsCard(
+    title: String,
+    danger: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     val t = cleanTokens()
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(UiMetrics.CardRadius))
             .background(t.surface)
-            .border(1.dp, t.cardBorder, RoundedCornerShape(UiMetrics.CardRadius))
+            .border(1.dp, if (danger) t.error.copy(alpha = 0.45f) else t.cardBorder, RoundedCornerShape(UiMetrics.CardRadius))
             .padding(16.dp),
     ) {
-        Text(title, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = t.text)
+        Text(
+            title,
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (danger) t.error else t.text,
+        )
         Spacer(Modifier.height(12.dp))
         content()
     }

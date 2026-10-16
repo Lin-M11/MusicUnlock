@@ -57,18 +57,12 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.CloudDownload
-import androidx.compose.material.icons.outlined.Headphones
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.automirrored.outlined.QueueMusic
-import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.outlined.NewReleases
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -88,7 +82,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -133,9 +126,7 @@ import musicunlock.AppLinks
 import musicunlock.BuildInfo
 import musicunlock.core.Formats
 import musicunlock.kugou.KugouApi
-import musicunlock.kugou.KugouDownloadPage
 import musicunlock.kuwo.KuwoApi
-import musicunlock.kuwo.KuwoDownloadPage
 import musicunlock.ncm.NeteaseApi
 import musicunlock.online.DownloadTaskManager
 import musicunlock.online.OnlineNetwork
@@ -148,7 +139,6 @@ import musicunlock.playlist.LocalTrack
 import musicunlock.playlist.MatchOutcome
 import musicunlock.playlist.PlaylistImport
 import musicunlock.player.AudioPlayerService
-import musicunlock.qq.QqDownloadPage
 import musicunlock.qq.QqMusicApi
 import musicunlock.service.ConversionTaskManager
 import musicunlock.service.ConversionTaskState
@@ -479,7 +469,10 @@ fun MainScreen(
     val conversionTasks by conversionManager.tasks.collectAsState()
     val downloadTasks by downloadManager.tasks.collectAsState()
     val playerState by audioPlayer.state.collectAsState()
-    val activeDownloads = downloadTasks.count { it.state !in setOf(DownloadTaskState.COMPLETED, DownloadTaskState.FAILED, DownloadTaskState.CANCELLED, DownloadTaskState.SKIPPED, DownloadTaskState.PAUSED) }
+    val runningDownloadTasks = downloadTasks.count {
+        it.state == DownloadTaskState.DOWNLOADING || it.state == DownloadTaskState.TRANSCODING || it.state == DownloadTaskState.TAGGING
+    }
+    val queuedDownloadTasks = downloadTasks.count { it.state == DownloadTaskState.QUEUED }
     val fileTaskIds = files.mapNotNull { it.taskId }.toSet()
     val trackedConversionTasks = conversionTasks.filter { it.id in fileTaskIds }
     val converting = trackedConversionTasks.any { it.state == ConversionTaskState.QUEUED || it.state == ConversionTaskState.RUNNING }
@@ -513,15 +506,8 @@ fun MainScreen(
             dark = dark,
             onToggleDark = onToggleDark,
             onShowAbout = onShowAbout,
-            onShowReset = onShowReset,
-            totalCount = files.size,
-            totalSize = humanSize(totalBytes),
-            convertingCount = convertingCount,
-            activeConversions = conversionTasks.count { it.state == ConversionTaskState.QUEUED || it.state == ConversionTaskState.RUNNING },
-            queuedConversions = conversionTasks.count { it.state == ConversionTaskState.QUEUED },
-            activeDownloads = activeDownloads,
-            queuedDownloads = downloadTasks.count { it.state == DownloadTaskState.QUEUED },
-            subscriptionCount = settings.subscriptions.count { it.enabled },
+            runningTasks = conversionTasks.count { it.state == ConversionTaskState.RUNNING } + runningDownloadTasks,
+            queuedTasks = conversionTasks.count { it.state == ConversionTaskState.QUEUED } + queuedDownloadTasks,
         )
         Box(Modifier.width(1.dp).fillMaxHeight().background(t.border))
 
@@ -654,63 +640,29 @@ fun MainScreen(
                     },
                 )
             } else if (page == 1) {
-                key(sessionRevision) {
-                    DownloadPage(
-                        settings = settings,
-                        onUpdateSettings = onUpdateSettings,
-                        downloadManager = downloadManager,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                }
+                OnlineDownloadTabs(
+                    sessionRevision = sessionRevision,
+                    settings = settings,
+                    onUpdateSettings = onUpdateSettings,
+                    downloadManager = downloadManager,
+                    audioPlayer = audioPlayer,
+                    crossPlatformMatcher = crossPlatformMatcher,
+                    library = library,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
             } else if (page == 2) {
-                key(sessionRevision) {
-                    QqDownloadPage(
-                        settings = settings,
-                        onUpdateSettings = onUpdateSettings,
-                        downloadManager = downloadManager,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                }
-            } else if (page == 3) {
-                key(sessionRevision) {
-                    KugouDownloadPage(
-                        settings = settings,
-                        onUpdateSettings = onUpdateSettings,
-                        downloadManager = downloadManager,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                }
-            } else if (page == 4) {
-                key(sessionRevision) {
-                    KuwoDownloadPage(
-                        settings = settings,
-                        onUpdateSettings = onUpdateSettings,
-                        downloadManager = downloadManager,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                }
-            } else if (page == 5) {
                 DownloadTaskPage(
                     downloadManager = downloadManager,
                     conversionManager = conversionManager,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
-            } else if (page == 6) {
+            } else if (page == 3) {
                 LibraryPage(
                     settings = settings,
                     onUpdateSettings = onUpdateSettings,
                     maintenance = libraryMaintenance,
                     subscriptionManager = subscriptionManager,
                     audioPlayer = audioPlayer,
-                    library = library,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                )
-            } else if (page == 7) {
-                DiscoverPage(
-                    settings = settings,
-                    downloadManager = downloadManager,
-                    audioPlayer = audioPlayer,
-                    crossPlatformMatcher = crossPlatformMatcher,
                     library = library,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
@@ -721,6 +673,7 @@ fun MainScreen(
                     library = library,
                     conversionManager = conversionManager,
                     downloadManager = downloadManager,
+                    onShowReset = onShowReset,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 )
             }
@@ -852,16 +805,11 @@ private fun WorkspaceHeader(
 ) {
     val t = cleanTokens()
     val (title, subtitle) = when (page) {
-        0 -> "格式转换" to "拖入加密音乐或常见原始音频，保留标签与封面输出标准音频"
-        1 -> "网易云下载" to "登录后选择歌单，下载歌曲"
-        2 -> "QQ 音乐下载" to "登录后选择歌单，下载歌曲"
-        3 -> "酷狗下载" to "登录后选择收藏与创建的歌单，下载歌曲"
-        4 -> "酷我下载" to "登录后选择收藏与创建的歌单，下载歌曲"
-        5 -> "任务中心" to "统一查看本地转换与在线下载，随时暂停、继续和重试"
-        6 -> "曲库整理" to "扫描重复与缺失元数据，批量整理并周期同步歌单"
-        7 -> "搜索与链接" to "搜索四个平台，粘贴歌曲、专辑、歌手或歌单链接后直接加入下载队列"
-        8 -> "设置" to "输出、下载、网络、后台、备份与更新"
-        else -> "搜索与链接" to "搜索四个平台，粘贴歌曲、专辑、歌手或歌单链接后直接加入下载队列"
+        0 -> "转换" to "拖入加密音乐或常见原始音频，保留标签与封面输出标准音频"
+        1 -> "在线下载" to "登录后选择歌单，下载歌曲"
+        2 -> "任务中心" to "统一查看本地转换与在线下载，随时暂停、继续和重试"
+        3 -> "曲库" to "扫描重复与缺失元数据，批量整理并周期同步歌单"
+        else -> "设置" to "输出、下载、网络、后台、备份与更新"
     }
 
     Row(
@@ -907,17 +855,11 @@ private fun AppSidebar(
     dark: Boolean,
     onToggleDark: () -> Unit,
     onShowAbout: () -> Unit,
-    onShowReset: () -> Unit,
-    totalCount: Int,
-    totalSize: String,
-    convertingCount: Int,
-    activeConversions: Int,
-    queuedConversions: Int,
-    activeDownloads: Int,
-    queuedDownloads: Int,
-    subscriptionCount: Int,
+    runningTasks: Int,
+    queuedTasks: Int,
 ) {
     val t = cleanTokens()
+    val pendingTasks = runningTasks + queuedTasks
     Column(
         modifier = Modifier
             .width(228.dp)
@@ -948,94 +890,45 @@ private fun AppSidebar(
             }
         }
 
-        Spacer(Modifier.height(28.dp))
-        SidebarSectionLabel("本地工具")
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(18.dp))
         SidebarNavItem(
             icon = Icons.Outlined.AudioFile,
-            title = "格式转换",
+            title = "转换",
             detail = "本地文件",
             selected = page == 0,
             onClick = { onSelect(0) },
         )
-
-        Spacer(Modifier.height(20.dp))
-        SidebarSectionLabel("音乐服务")
-        Spacer(Modifier.height(8.dp))
         SidebarNavItem(
             icon = Icons.Outlined.CloudDownload,
-            title = "网易云下载",
-            detail = "扫码或浏览器",
+            title = "在线下载",
+            detail = "网易云 · QQ · 酷狗 · 酷我",
             selected = page == 1,
             onClick = { onSelect(1) },
         )
         SidebarNavItem(
-            icon = Icons.AutoMirrored.Outlined.QueueMusic,
-            title = "QQ 音乐下载",
-            detail = "扫码或 Cookie",
+            icon = Icons.Outlined.Download,
+            title = "任务中心",
+            detail = if (pendingTasks > 0) "$runningTasks 进行中 · $queuedTasks 等待" else "转换、下载与历史",
+            badge = if (pendingTasks > 0) pendingTasks.toString() else null,
             selected = page == 2,
             onClick = { onSelect(2) },
         )
         SidebarNavItem(
-            icon = Icons.Outlined.Headphones,
-            title = "酷狗下载",
-            detail = "扫码或浏览器",
+            icon = Icons.Outlined.LibraryMusic,
+            title = "曲库",
+            detail = "扫描、标签与追更",
             selected = page == 3,
             onClick = { onSelect(3) },
-        )
-        SidebarNavItem(
-            icon = Icons.Outlined.Album,
-            title = "酷我下载",
-            detail = "浏览器或 Cookie",
-            selected = page == 4,
-            onClick = { onSelect(4) },
-        )
-
-        Spacer(Modifier.height(20.dp))
-        SidebarSectionLabel("任务管理")
-        Spacer(Modifier.height(8.dp))
-        SidebarNavItem(
-            icon = Icons.Outlined.Download,
-            title = "任务中心",
-            detail = if (activeConversions + activeDownloads > 0 || queuedConversions + queuedDownloads > 0) {
-                "${activeConversions + activeDownloads} 进行中 · ${queuedConversions + queuedDownloads} 等待"
-            } else {
-                "转换、下载、暂停与历史"
-            },
-            selected = page == 5,
-            onClick = { onSelect(5) },
-        )
-
-        SidebarNavItem(
-            icon = Icons.Outlined.Tune,
-            title = "曲库整理",
-            detail = if (subscriptionCount > 0) "$subscriptionCount 个歌单追更中" else "扫描、标签与追更",
-            selected = page == 6,
-            onClick = { onSelect(6) },
-        )
-
-        SidebarNavItem(
-            icon = Icons.Outlined.Search,
-            title = "搜索与链接",
-            detail = "四平台统一搜索",
-            selected = page == 7,
-            onClick = { onSelect(7) },
         )
         SidebarNavItem(
             icon = Icons.Outlined.Settings,
             title = "设置",
             detail = "输出、网络、备份与更新",
-            selected = page == 8,
-            onClick = { onSelect(8) },
+            selected = page == 4,
+            onClick = { onSelect(4) },
         )
 
         Spacer(Modifier.weight(1f))
-        SidebarQueueSummary(
-            totalCount = totalCount,
-            totalSize = totalSize,
-            convertingCount = convertingCount,
-            onClick = { onSelect(0) },
-        )
         HorizontalDivider(color = t.border)
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
@@ -1047,33 +940,16 @@ private fun AppSidebar(
                 onClick = onShowAbout,
             )
             Spacer(Modifier.weight(1f))
-            SidebarUtilityButton(
+            AppIconButton(
                 icon = if (dark) Icons.Filled.LightMode else Icons.Outlined.DarkMode,
-                label = if (dark) "浅色" else "深色",
+                contentDescription = if (dark) "切换到浅色主题" else "切换到深色主题",
                 onClick = onToggleDark,
+                size = UiMetrics.CompactIconButtonSize,
             )
-        }
-        Box(Modifier.fillMaxWidth().padding(horizontal = 21.dp)) {
-            SidebarUtilityButton(
-                icon = Icons.Outlined.Refresh,
-                label = "恢复默认设置",
-                onClick = onShowReset,
-            )
+            Spacer(Modifier.width(6.dp))
+            Text("v${BuildInfo.VERSION}", fontSize = 11.sp, color = t.textMuted)
         }
     }
-}
-
-@Composable
-private fun SidebarSectionLabel(text: String) {
-    val t = cleanTokens()
-    Text(
-        text,
-        modifier = Modifier.padding(horizontal = 18.dp),
-        fontSize = 10.5.sp,
-        fontWeight = FontWeight.SemiBold,
-        letterSpacing = 0.7.sp,
-        color = t.textMuted,
-    )
 }
 
 @Composable
@@ -1083,6 +959,7 @@ private fun SidebarNavItem(
     detail: String,
     selected: Boolean,
     onClick: () -> Unit,
+    badge: String? = null,
 ) {
     val t = cleanTokens()
     val interaction = remember { MutableInteractionSource() }
@@ -1146,69 +1023,21 @@ private fun SidebarNavItem(
                 color = t.textMuted,
             )
         }
-        if (selected) {
+        if (badge != null) {
             Box(
                 modifier = Modifier
-                    .size(6.dp)
                     .clip(CircleShape)
-                    .background(t.primary),
-            )
-        }
-    }
-}
-
-@Composable
-private fun SidebarQueueSummary(
-    totalCount: Int,
-    totalSize: String,
-    convertingCount: Int,
-    onClick: () -> Unit,
-) {
-    val t = cleanTokens()
-    val interaction = remember { MutableInteractionSource() }
-    val hovered by interaction.collectIsHoveredAsState()
-    val focused by interaction.collectIsFocusedAsState()
-    Column(
-        modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 10.dp)
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (hovered) t.surfaceSoft else Color.Transparent)
-            .border(
-                1.dp,
-                if (focused) t.primary.copy(alpha = 0.72f) else Color.Transparent,
-                RoundedCornerShape(12.dp),
-            )
-            .hoverable(interaction)
-            .pointerHoverIcon(PointerIcon.Hand)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "转换队列",
-                fontSize = 10.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.7.sp,
-                color = t.textMuted,
-            )
-            Spacer(Modifier.weight(1f))
-            if (convertingCount > 0) {
+                    .background(if (selected) t.surface else t.surfaceSoft)
+                    .padding(horizontal = 7.dp, vertical = 2.dp),
+            ) {
                 Text(
-                    "$convertingCount 处理中",
+                    badge,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = t.primary,
                 )
             }
         }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            if (totalCount > 0) "$totalCount 首 · $totalSize" else "暂无待转换文件",
-            fontSize = 12.5.sp,
-            fontWeight = if (totalCount > 0) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (totalCount > 0) t.text else t.textMuted,
-        )
     }
 }
 
